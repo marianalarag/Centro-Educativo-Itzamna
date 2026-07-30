@@ -1,0 +1,6 @@
+.dev-runtime
+.next
+.vercel
+.git
+node_modules
+.env*
