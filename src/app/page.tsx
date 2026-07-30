@@ -3,7 +3,7 @@
 import {
   ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Banknote, Bell, BookOpen,
   ChevronDown, CircleDollarSign, ClipboardList, FileText, GraduationCap,
-  Menu, Plus, Search, Users, X,
+  LogOut, Menu, Plus, Search, Users, X,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -35,6 +35,9 @@ const paths: Record<string, string> = {
   Reportes: "/reportes",
 };
 
+const namesByPath = Object.fromEntries(Object.entries(paths).map(([name, path]) => [path, name]));
+type MovementRow = readonly [string, string, string, string, string, number, string];
+
 export default function Home({ initialActive = "Inicio" }: { initialActive?: string }) {
   const router = useRouter();
   const supabase = useMemo(() => createClient(), []);
@@ -43,8 +46,12 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
   const [menu, setMenu] = useState(false);
   const [modal, setModal] = useState<string | null>(null);
   const [authChecking, setAuthChecking] = useState(true);
-  const visible = useMemo(() => movements.filter((m) =>
-    m.join(" ").toLocaleLowerCase("es").includes(query.toLocaleLowerCase("es"))), [query]);
+  const [dbMovements, setDbMovements] = useState<MovementRow[]>([]);
+  const [summary, setSummary] = useState({ income: 0, expense: 0, pending: 0 });
+  const [userName, setUserName] = useState("Personal autorizado");
+  const displayMovements: readonly MovementRow[] = dbMovements.length ? dbMovements : movements;
+  const visible = useMemo(() => displayMovements.filter((m) =>
+    m.join(" ").toLocaleLowerCase("es").includes(query.toLocaleLowerCase("es"))), [displayMovements, query]);
 
   useEffect(() => {
     let mounted = true;
@@ -52,6 +59,7 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
       if (mounted) {
         setAuthChecking(false);
         if (!data.user) router.replace("/login");
+        else setUserName(data.user.user_metadata?.full_name || data.user.email?.split("@")[0] || "Personal autorizado");
       }
     });
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -62,11 +70,55 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
       listener.subscription.unsubscribe();
     };
   }, [router, supabase]);
+
+  useEffect(() => {
+    const updateFromUrl = () => setActive(namesByPath[window.location.pathname] ?? "Inicio");
+    window.addEventListener("popstate", updateFromUrl);
+    return () => window.removeEventListener("popstate", updateFromUrl);
+  }, []);
+
+  useEffect(() => {
+    async function loadDashboard() {
+      const [{ data: incomes }, { data: expenses }, { data: students }, { data: charges }] = await Promise.all([
+        supabase.from("incomes").select("id,amount,paid_on,payment_method,student_id").eq("status", "confirmado").order("paid_on", { ascending: false }).limit(10),
+        supabase.from("expenses").select("id,total,spent_on,payment_method,description").eq("status", "confirmado").order("spent_on", { ascending: false }).limit(10),
+        supabase.from("students").select("id,first_name,last_name"),
+        supabase.from("charges").select("net_amount,paid_amount").in("status", ["pendiente", "parcial", "vencido"]),
+      ]);
+      const studentMap = new Map((students ?? []).map((student) => [student.id, `${student.first_name} ${student.last_name}`]));
+      const incomeRows: MovementRow[] = (incomes ?? []).map((income) => [
+        `ING-${income.id.slice(0, 6).toUpperCase()}`, income.paid_on, studentMap.get(income.student_id ?? "") ?? "Depósito sin identificar",
+        "Ingreso registrado", income.payment_method, Number(income.amount), "Ingreso",
+      ]);
+      const expenseRows: MovementRow[] = (expenses ?? []).map((expense) => [
+        `EGR-${expense.id.slice(0, 6).toUpperCase()}`, expense.spent_on, expense.description, "Egreso operativo",
+        expense.payment_method, -Number(expense.total), "Egreso",
+      ]);
+      setDbMovements([...incomeRows, ...expenseRows].sort((a, b) => String(b[1]).localeCompare(String(a[1]))).slice(0, 10));
+      setSummary({
+        income: (incomes ?? []).reduce((sum, item) => sum + Number(item.amount), 0),
+        expense: (expenses ?? []).reduce((sum, item) => sum + Number(item.total), 0),
+        pending: (charges ?? []).reduce((sum, charge) => sum + Number(charge.net_amount) - Number(charge.paid_amount), 0),
+      });
+    }
+    loadDashboard();
+    window.addEventListener("cei:data-changed", loadDashboard);
+    return () => window.removeEventListener("cei:data-changed", loadDashboard);
+  }, [supabase]);
+
   const go = (name: string) => {
     setActive(name);
     setMenu(false);
-    router.push(paths[name] ?? "/");
+    const target = paths[name] ?? "/";
+    if (window.location.pathname !== target) window.history.pushState({}, "", target);
   };
+
+  async function signOut() {
+    await supabase.auth.signOut();
+    router.replace("/login");
+  }
+
+  if (authChecking) return <div className="authLoading">Comprobando sesión…</div>;
 
   return (
     <div className="shell">
@@ -86,6 +138,7 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
             </button>
           ))}
         </nav>
+        <div className="sessionActions"><span>{userName}</span><button className="logoutButton" onClick={signOut} aria-label="Cerrar sesión" title="Cerrar sesión"><LogOut size={16} /> Cerrar sesión</button></div>
         <div className="user"><div className="avatar">CA</div><div><strong>Claudia A.</strong><span>Coordinación</span></div><ChevronDown size={16} /></div>
       </aside>
       {menu && <button className="scrim" onClick={() => setMenu(false)} />}
@@ -116,9 +169,9 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
           </section>
 
           <section className="numberBar">
-            <div><span>Ingresos de junio</span><strong className="financialPositive">{money.format(284650)}</strong></div>
-            <div><span>Egresos de junio</span><strong className="financialNegative">{money.format(168420)}</strong></div>
-            <div><span>Pendiente por cobrar</span><strong className="financialWarning">{money.format(47850)}</strong></div>
+            <div><span>Ingresos registrados</span><strong className="financialPositive">{money.format(summary.income)}</strong></div>
+            <div><span>Egresos registrados</span><strong className="financialNegative">{money.format(summary.expense)}</strong></div>
+            <div><span>Pendiente por cobrar</span><strong className="financialWarning">{money.format(summary.pending)}</strong></div>
             <button onClick={() => go("Reportes")}>Consultar reportes →</button>
           </section>
 
@@ -227,6 +280,7 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
   const [enrollment, setEnrollment] = useState("");
   const [amount, setAmount] = useState("");
   const [reference, setReference] = useState("");
+  const [concept, setConcept] = useState("Colegiatura");
   const [description, setDescription] = useState("");
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [busy, setBusy] = useState(false);
@@ -256,6 +310,42 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
         });
         if (error) throw error;
       } else if (payment) {
+        const { data: account } = await supabase.from("accounts").select("id").eq("kind", type === "cobro" ? "efectivo" : "banco").eq("active", true).limit(1).maybeSingle();
+        if (!account) throw new Error("No hay una cuenta financiera configurada.");
+        const { data: student } = name.trim()
+          ? await supabase.from("students").select("id").or(`enrollment.ilike.%${name.trim()}%,first_name.ilike.%${name.trim()}%,last_name.ilike.%${name.trim()}%`).limit(1).maybeSingle()
+          : { data: null };
+        if (type === "cobro") {
+          if (!student) throw new Error("Selecciona un alumno válido para generar el recibo.");
+          const { data: cycle } = await supabase.from("school_cycles").select("id").eq("active", true).single();
+          const { data: paymentConcept } = await supabase.from("payment_concepts").select("id,base_amount").eq("name", concept.trim()).maybeSingle();
+          if (!cycle || !paymentConcept) throw new Error("No existe un ciclo o concepto de cobro configurado.");
+          let { data: charge } = await supabase.from("charges").select("id").eq("student_id", student.id).eq("cycle_id", cycle.id).eq("concept_id", paymentConcept.id).in("status", ["pendiente", "parcial"]).limit(1).maybeSingle();
+          if (!charge) {
+            const { data: createdCharge, error: chargeError } = await supabase.from("charges").insert({
+              student_id: student.id, cycle_id: cycle.id, concept_id: paymentConcept.id,
+              gross_amount: Number(paymentConcept.base_amount) || Number(amount), due_on: date,
+            }).select("id").single();
+            if (chargeError) throw chargeError;
+            charge = createdCharge;
+          }
+          const { error } = await supabase.rpc("register_cash_payment", {
+            p_student_id: student.id, p_account_id: account.id, p_method: "efectivo",
+            p_notes: concept.trim(), p_allocations: [{ charge_id: charge.id, amount: Number(amount) }],
+          });
+          if (error) throw error;
+        } else {
+          const { error } = await supabase.from("incomes").insert({
+            student_id: student?.id ?? null, account_id: account.id, paid_on: date,
+            amount: Number(amount), payment_method: "transferencia",
+            bank_reference: reference.trim() || null, created_by: user.id,
+          });
+          if (error) throw error;
+        }
+        window.dispatchEvent(new Event("cei:data-changed"));
+        close();
+        return;
+      } else if (payment && false) {
         const accountName = type === "cobro" ? "Caja administración" : "Banco principal";
         const { data: account } = await supabase.from("accounts").select("id").eq("name", accountName).single();
         if (!account) throw new Error("No hay una cuenta financiera configurada.");
@@ -263,9 +353,9 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
           ? await supabase.from("students").select("id").or(`enrollment.ilike.%${name.trim()}%,first_name.ilike.%${name.trim()}%,last_name.ilike.%${name.trim()}%`).limit(1).maybeSingle()
           : { data: null };
         const { error } = await supabase.from("incomes").insert({
-          student_id: student?.id ?? null, account_id: account.id, paid_on: date,
+          student_id: student?.id ?? null, account_id: account!.id, paid_on: date,
           amount: Number(amount), payment_method: type === "cobro" ? "efectivo" : "transferencia",
-          bank_reference: reference.trim() || null, created_by: user.id,
+          bank_reference: reference.trim() || null, created_by: user!.id,
         });
         if (error) throw error;
       } else if (type === "Egresos") {
@@ -305,7 +395,7 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
       <div className="modalHead"><div><p className="eyebrow">CAPTURA</p><h2>{formTitles[type] ?? `Nuevo registro de ${type.toLowerCase()}`}</h2></div><button type="button" className="iconButton" onClick={close}><X size={20} /></button></div>
       {payment ? <><label>Alumno<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Nombre o matrícula" /></label>
         <div className="formRow"><label>Fecha<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label>Monto<input required type="number" min=".01" step=".01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="$ 0.00" /></label></div>
-        <label>{type === "cobro" ? "Concepto" : "Referencia bancaria"}<input required={type === "transferencia"} value={reference} onChange={(event) => setReference(event.target.value)} placeholder={type === "cobro" ? "Colegiatura" : "Referencia del depósito"} /></label>
+        <label>{type === "cobro" ? "Concepto" : "Referencia bancaria"}<input required={type === "transferencia"} value={type === "cobro" ? concept : reference} onChange={(event) => type === "cobro" ? setConcept(event.target.value) : setReference(event.target.value)} placeholder={type === "cobro" ? "Colegiatura" : "Referencia del depósito"} /></label>
       </> : <><label>{type === "Alumnos" ? "Nombre completo" : "Descripción"}<input required value={name} onChange={(event) => setName(event.target.value)} placeholder="Escribe la información principal" /></label>
         <div className="formRow"><label>Fecha<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label>{type === "Alumnos" ? "Matrícula" : "Importe"}<input required={type !== "Alumnos"} type={type === "Alumnos" ? "text" : "number"} min={type === "Alumnos" ? undefined : ".01"} step={type === "Alumnos" ? undefined : ".01"} value={type === "Alumnos" ? enrollment : amount} onChange={(event) => type === "Alumnos" ? setEnrollment(event.target.value) : setAmount(event.target.value)} placeholder={type === "Alumnos" ? "CEI-0001" : "$ 0.00"} /></label></div>
         {type === "Alumnos" && <label>Grado<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Ej. 4° Primaria" /></label>}
