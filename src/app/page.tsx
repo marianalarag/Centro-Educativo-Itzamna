@@ -1,27 +1,20 @@
 "use client";
 
 import {
-  ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Banknote, Bell, BookOpen,
-  ChevronDown, CircleDollarSign, ClipboardList, FileText, GraduationCap,
-  LogOut, Menu, Plus, Search, Users, X,
+  AlertTriangle, ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Banknote, Bell,
+  BookOpen, CheckCircle2, ChevronDown, CircleDollarSign, ClipboardList,
+  Clock3, FileText, GraduationCap, LogOut, Menu, Plus, Search, Upload, Users, X,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { StudentImportModal } from "@/components/student-import-modal";
 
 const nav = [
   ["Inicio", BookOpen], ["Alumnos", Users], ["Cobros", CircleDollarSign],
   ["Ingresos", ArrowDownLeft], ["Conciliación", Banknote], ["Egresos", ArrowUpRight],
   ["Nómina", ClipboardList], ["Traspasos", ArrowLeftRight], ["Becas", GraduationCap],
   ["Presupuesto", FileText], ["Reportes", BookOpen],
-] as const;
-
-const movements = [
-  ["REC-00482", "30 jun, 10:42", "Sofía Martínez Pech", "Colegiatura · Mes 10", "Efectivo", 3250, "Ingreso"],
-  ["TRF-00219", "30 jun, 09:18", "Mauricio Torres Solís", "Saldo colegiatura · Mes 9", "Transferencia", 50, "Ingreso"],
-  ["EGR-00176", "29 jun, 13:06", "JAPAY", "Servicio de agua · Junio", "Caja PyME", -1840, "Egreso"],
-  ["REC-00481", "29 jun, 12:24", "Ana Paula Díaz", "Estancia · Junio", "Efectivo", 780, "Ingreso"],
-  ["TRF-00218", "29 jun, 08:51", "Depósito sin identificar", "Pendiente de asignación", "Transferencia", 3250, "Pendiente"],
 ] as const;
 
 const money = new Intl.NumberFormat("es-MX", {
@@ -37,6 +30,40 @@ const paths: Record<string, string> = {
 
 const namesByPath = Object.fromEntries(Object.entries(paths).map(([name, path]) => [path, name]));
 type MovementRow = readonly [string, string, string, string, string, number, string];
+type PaymentStatusRow = {
+  student_id: string;
+  enrollment: string;
+  first_name: string;
+  last_name: string;
+  grade: string;
+  concept: string | null;
+  net_amount: number | null;
+  paid_amount: number | null;
+  balance: number | null;
+  due_on: string | null;
+  paid_on: string | null;
+  payment_status: "pagado" | "no_pagado" | "pagado_retraso";
+};
+
+function formatDate(value: string | null) {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(`${value}T00:00:00Z`));
+}
+
+function paymentStatusPresentation(status: PaymentStatusRow["payment_status"]) {
+  if (status === "pagado") return { label: "Pagado", tone: "paid" };
+  if (status === "pagado_retraso") return { label: "Pagó con retardo", tone: "late" };
+  return { label: "No ha pagado", tone: "unpaid" };
+}
+
+function initials(name: string) {
+  return name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "CE";
+}
+
+function roleLabel(role: string) {
+  const labels: Record<string, string> = { direccion: "Dirección", caja: "Caja", captura: "Captura", admin: "Dirección" };
+  return labels[role] ?? "Personal";
+}
 
 export default function Home({ initialActive = "Inicio" }: { initialActive?: string }) {
   const router = useRouter();
@@ -47,19 +74,26 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
   const [modal, setModal] = useState<string | null>(null);
   const [authChecking, setAuthChecking] = useState(true);
   const [dbMovements, setDbMovements] = useState<MovementRow[]>([]);
-  const [summary, setSummary] = useState({ income: 0, expense: 0, pending: 0 });
+  const [paymentStatuses, setPaymentStatuses] = useState<PaymentStatusRow[]>([]);
+  const [summary, setSummary] = useState({ income: 0, expense: 0, pending: 0, paid: 0, late: 0, unpaid: 0 });
   const [userName, setUserName] = useState("Personal autorizado");
-  const displayMovements: readonly MovementRow[] = dbMovements.length ? dbMovements : movements;
+  const [userRole, setUserRole] = useState("captura");
+  const displayMovements: readonly MovementRow[] = dbMovements;
   const visible = useMemo(() => displayMovements.filter((m) =>
     m.join(" ").toLocaleLowerCase("es").includes(query.toLocaleLowerCase("es"))), [displayMovements, query]);
 
   useEffect(() => {
     let mounted = true;
-    supabase.auth.getUser().then(({ data }) => {
+    supabase.auth.getUser().then(async ({ data }) => {
       if (mounted) {
         setAuthChecking(false);
         if (!data.user) router.replace("/login");
-        else setUserName(data.user.user_metadata?.full_name || data.user.email?.split("@")[0] || "Personal autorizado");
+        else {
+          const { data: profile } = await supabase.from("profiles").select("full_name,role").eq("id", data.user.id).maybeSingle();
+          if (!mounted) return;
+          setUserName(profile?.full_name || data.user.user_metadata?.full_name || data.user.email?.split("@")[0] || "Personal autorizado");
+          setUserRole(profile?.role || "captura");
+        }
       }
     });
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -79,26 +113,32 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
 
   useEffect(() => {
     async function loadDashboard() {
-      const [{ data: incomes }, { data: expenses }, { data: students }, { data: charges }] = await Promise.all([
-        supabase.from("incomes").select("id,amount,paid_on,payment_method,student_id").eq("status", "confirmado").order("paid_on", { ascending: false }).limit(10),
-        supabase.from("expenses").select("id,total,spent_on,payment_method,description").eq("status", "confirmado").order("spent_on", { ascending: false }).limit(10),
+      const [{ data: incomes }, { data: expenses }, { data: students }, { data: charges }, { data: statuses }] = await Promise.all([
+        supabase.from("incomes").select("id,amount,paid_on,payment_method,student_id").eq("status", "confirmado").order("paid_on", { ascending: false }).limit(1000),
+        supabase.from("expenses").select("id,total,spent_on,payment_method,description").eq("status", "confirmado").order("spent_on", { ascending: false }).limit(1000),
         supabase.from("students").select("id,first_name,last_name"),
         supabase.from("charges").select("net_amount,paid_amount").in("status", ["pendiente", "parcial", "vencido"]),
+        supabase.from("student_payment_status").select("student_id,enrollment,first_name,last_name,grade,concept,net_amount,paid_amount,balance,due_on,paid_on,payment_status").order("enrollment").limit(50),
       ]);
       const studentMap = new Map((students ?? []).map((student) => [student.id, `${student.first_name} ${student.last_name}`]));
       const incomeRows: MovementRow[] = (incomes ?? []).map((income) => [
-        `ING-${income.id.slice(0, 6).toUpperCase()}`, income.paid_on, studentMap.get(income.student_id ?? "") ?? "Depósito sin identificar",
+        `ING-${income.id.slice(0, 6).toUpperCase()}`, formatDate(income.paid_on), studentMap.get(income.student_id ?? "") ?? "Depósito sin identificar",
         "Ingreso registrado", income.payment_method, Number(income.amount), "Ingreso",
       ]);
       const expenseRows: MovementRow[] = (expenses ?? []).map((expense) => [
-        `EGR-${expense.id.slice(0, 6).toUpperCase()}`, expense.spent_on, expense.description, "Egreso operativo",
+        `EGR-${expense.id.slice(0, 6).toUpperCase()}`, formatDate(expense.spent_on), expense.description, "Egreso operativo",
         expense.payment_method, -Number(expense.total), "Egreso",
       ]);
       setDbMovements([...incomeRows, ...expenseRows].sort((a, b) => String(b[1]).localeCompare(String(a[1]))).slice(0, 10));
+      const paymentRows = (statuses ?? []) as PaymentStatusRow[];
+      setPaymentStatuses(paymentRows);
       setSummary({
         income: (incomes ?? []).reduce((sum, item) => sum + Number(item.amount), 0),
         expense: (expenses ?? []).reduce((sum, item) => sum + Number(item.total), 0),
         pending: (charges ?? []).reduce((sum, charge) => sum + Number(charge.net_amount) - Number(charge.paid_amount), 0),
+        paid: paymentRows.filter((row) => row.payment_status === "pagado").length,
+        late: paymentRows.filter((row) => row.payment_status === "pagado_retraso").length,
+        unpaid: paymentRows.filter((row) => row.payment_status === "no_pagado").length,
       });
     }
     loadDashboard();
@@ -139,7 +179,7 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
           ))}
         </nav>
         <div className="sessionActions"><span>{userName}</span><button className="logoutButton" onClick={signOut} aria-label="Cerrar sesión" title="Cerrar sesión"><LogOut size={16} /> Cerrar sesión</button></div>
-        <div className="user"><div className="avatar">CA</div><div><strong>Claudia A.</strong><span>Coordinación</span></div><ChevronDown size={16} /></div>
+        <div className="user"><div className="avatar">{initials(userName)}</div><div><strong>{userName}</strong><span>{roleLabel(userRole)}</span></div><ChevronDown size={16} /></div>
       </aside>
       {menu && <button className="scrim" onClick={() => setMenu(false)} />}
 
@@ -175,6 +215,31 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
             <button onClick={() => go("Reportes")}>Consultar reportes →</button>
           </section>
 
+          <section className="panel paymentPanel">
+            <div className="paymentPanelHead">
+              <div><h2>Estado de pagos por alumno</h2><p>Último cargo registrado en el ciclo activo</p></div>
+              <div className="paymentCounters">
+                <span className="paid"><CheckCircle2 size={16} /><b>{summary.paid}</b> Pagaron</span>
+                <span className="late"><Clock3 size={16} /><b>{summary.late}</b> Con retardo</span>
+                <span className="unpaid"><AlertTriangle size={16} /><b>{summary.unpaid}</b> No han pagado</span>
+              </div>
+            </div>
+            <div className="tableWrap"><table className="paymentTable">
+              <thead><tr><th>Matrícula</th><th>Alumno</th><th>Grado</th><th>Concepto</th><th>Vencimiento</th><th>Pagado</th><th>Saldo</th><th>Estado</th></tr></thead>
+              <tbody>{paymentStatuses.slice(0, 10).map((row) => {
+                const status = paymentStatusPresentation(row.payment_status);
+                return <tr key={row.student_id}>
+                  <td data-label="Matrícula"><button className="folio">{row.enrollment}</button></td>
+                  <td data-label="Alumno" className="person">{row.first_name} {row.last_name}</td>
+                  <td data-label="Grado">{row.grade}</td><td data-label="Concepto">{row.concept ?? "Sin cargo"}</td>
+                  <td data-label="Vencimiento">{formatDate(row.due_on)}</td><td data-label="Pagado">{money.format(Number(row.paid_amount ?? 0))}</td>
+                  <td data-label="Saldo" className={Number(row.balance) > 0 ? "financialNegative" : "financialPositive"}>{money.format(Number(row.balance ?? 0))}</td>
+                  <td data-label="Estado"><span className={`paymentBadge ${status.tone}`}>{status.label}</span></td>
+                </tr>;
+              })}</tbody>
+            </table>{!paymentStatuses.length && <div className="empty">Aún no hay alumnos con cargos. Importa una lista o registra el primer alumno.</div>}</div>
+          </section>
+
           <section className="panel movements">
             <div className="movementHead">
               <div><h2>Movimientos recientes</h2><p>Ingresos y egresos registrados</p></div>
@@ -192,7 +257,9 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
         </div>
       </main>
 
-      {modal && <QuickForm type={modal} close={() => setModal(null)} />}
+      {modal === "importar-alumnos"
+        ? <StudentImportModal close={() => setModal(null)} role={userRole} />
+        : modal && <QuickForm type={modal} close={() => setModal(null)} />}
     </div>
   );
 }
@@ -211,12 +278,80 @@ const moduleData: Record<string, { title: string; subtitle: string; action: stri
 };
 
 function ModuleView({ name, openForm }: { name: string; openForm: (type: string) => void }) {
+  const supabase = useMemo(() => createClient(), []);
   const data = moduleData[name] ?? moduleData.Alumnos;
+  const [rows, setRows] = useState<string[][]>(data.rows);
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const liveModule = ["Alumnos", "Cobros", "Ingresos", "Egresos"].includes(name);
+
+  useEffect(() => {
+    async function loadRows() {
+      if (!liveModule) {
+        setRows(data.rows);
+        return;
+      }
+      setLoading(true);
+      setLoadError("");
+      try {
+        if (name === "Alumnos" || name === "Cobros") {
+          const { data: statuses, error } = await supabase
+            .from("student_payment_status")
+            .select("student_id,enrollment,first_name,last_name,level,grade,tutor_name,tutor_phone,concept,net_amount,paid_amount,balance,due_on,paid_on,payment_status")
+            .order("enrollment");
+          if (error) throw error;
+          const items = (statuses ?? []) as Array<PaymentStatusRow & { level: string; tutor_name: string | null; tutor_phone: string | null }>;
+          setRows(name === "Alumnos"
+            ? items.map((item) => [item.enrollment, `${item.first_name} ${item.last_name}`, `${item.grade} · ${item.level}`, item.tutor_name ?? "—", item.tutor_phone ?? "—", paymentStatusPresentation(item.payment_status).label])
+            : items.map((item) => [`${item.first_name} ${item.last_name}`, item.concept ?? "Sin cargo", formatDate(item.due_on), money.format(Number(item.net_amount ?? 0)), money.format(Number(item.paid_amount ?? 0)), money.format(Number(item.balance ?? 0)), paymentStatusPresentation(item.payment_status).label]));
+        } else if (name === "Ingresos") {
+          const [{ data: incomes, error }, { data: students }] = await Promise.all([
+            supabase.from("incomes").select("id,paid_on,student_id,payment_method,amount,reconciliation_status").eq("status", "confirmado").order("paid_on", { ascending: false }).limit(100),
+            supabase.from("students").select("id,first_name,last_name"),
+          ]);
+          if (error) throw error;
+          const studentMap = new Map((students ?? []).map((student) => [student.id, `${student.first_name} ${student.last_name}`]));
+          setRows((incomes ?? []).map((income) => [
+            `ING-${income.id.slice(0, 6).toUpperCase()}`, formatDate(income.paid_on), studentMap.get(income.student_id ?? "") ?? "Sin identificar",
+            "Colegiatura", income.payment_method, money.format(Number(income.amount)), String(income.reconciliation_status).replace("_", " "),
+          ]));
+        } else if (name === "Egresos") {
+          const [{ data: expenses, error }, { data: categories }, { data: accounts }] = await Promise.all([
+            supabase.from("expenses").select("id,spent_on,category_id,account_id,supplier,description,total,status").order("spent_on", { ascending: false }).limit(100),
+            supabase.from("expense_categories").select("id,name,type"),
+            supabase.from("accounts").select("id,name"),
+          ]);
+          if (error) throw error;
+          const categoryMap = new Map((categories ?? []).map((category) => [category.id, category]));
+          const accountMap = new Map((accounts ?? []).map((account) => [account.id, account.name]));
+          setRows((expenses ?? []).map((expense) => {
+            const category = categoryMap.get(expense.category_id);
+            return [`EGR-${expense.id.slice(0, 6).toUpperCase()}`, formatDate(expense.spent_on), category?.type ?? "gasto", category?.name ?? "Sin categoría", expense.description, accountMap.get(expense.account_id) ?? "—", money.format(Number(expense.total))];
+          }));
+        }
+      } catch (error) {
+        setRows([]);
+        setLoadError(error instanceof Error ? error.message : "No se pudieron cargar los registros.");
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadRows();
+    window.addEventListener("cei:data-changed", loadRows);
+    return () => window.removeEventListener("cei:data-changed", loadRows);
+  }, [data.rows, liveModule, name, supabase]);
+
+  const visibleRows = useMemo(() => rows.filter((row) => row.join(" ").toLocaleLowerCase("es").includes(query.toLocaleLowerCase("es"))), [query, rows]);
   const act = () => openForm(name === "Cobros" ? "cobro" : name === "Ingresos" ? "transferencia" : name);
   return <section className="modulePage">
-    <div className="moduleHead"><div><p className="eyebrow">CICLO 2025 – 2026</p><h1>{data.title}</h1><p>{data.subtitle}</p></div><button className="primary" onClick={act}><Plus size={18}/>{data.action}</button></div>
-    <div className="moduleTools"><label className="search"><Search size={18}/><input placeholder={`Buscar en ${data.title.toLowerCase()}…`}/></label><button className="secondary">Filtros <ChevronDown size={16}/></button></div>
-    <div className="panel moduleTable"><div className="tableWrap"><table><thead><tr>{data.headers.map(h=><th key={h}>{h}</th>)}</tr></thead><tbody>{data.rows.map((row,i)=><tr key={i}>{row.map((cell,j)=><td data-label={data.headers[j]} className={[j===1?"person":"", getFinancialTone(name, data.headers[j], cell, row)].filter(Boolean).join(" ")} key={j}>{cell}</td>)}</tr>)}</tbody></table></div><div className="panelFooter"><span>{data.rows.length} registros de demostración</span><button>Siguiente página →</button></div></div>
+    <div className="moduleHead"><div><p className="eyebrow">CICLO ACTIVO</p><h1>{data.title}</h1><p>{data.subtitle}</p></div><div className="moduleHeadActions">{name === "Alumnos" && <button className="secondary" onClick={() => openForm("importar-alumnos")}><Upload size={18}/>Importar lista</button>}<button className="primary" onClick={act}><Plus size={18}/>{data.action}</button></div></div>
+    <div className="moduleTools"><label className="search"><Search size={18}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Buscar en ${data.title.toLowerCase()}…`}/></label><button className="secondary">Filtros <ChevronDown size={16}/></button></div>
+    <div className="panel moduleTable"><div className="tableWrap"><table><thead><tr>{data.headers.map(h=><th key={h}>{h}</th>)}</tr></thead><tbody>{visibleRows.map((row,i)=><tr key={`${row[0]}-${i}`}>{row.map((cell,j)=>{
+      const isStatus = data.headers[j] === "Estado";
+      const statusTone = cell === "Pagado" ? "paid" : cell === "Pagó con retardo" ? "late" : cell === "No ha pagado" ? "unpaid" : "";
+      return <td data-label={data.headers[j]} className={[j===1?"person":"", getFinancialTone(name, data.headers[j], cell, row)].filter(Boolean).join(" ")} key={j}>{isStatus && statusTone ? <span className={`paymentBadge ${statusTone}`}>{cell}</span> : cell}</td>;
+    })}</tr>)}</tbody></table>{loading && <div className="empty">Cargando registros…</div>}{!loading && !visibleRows.length && !loadError && <div className="empty">No hay registros para mostrar.</div>}{loadError && <div className="empty errorText">{loadError}</div>}</div><div className="panelFooter"><span>{visibleRows.length} {liveModule ? "registros de Supabase" : "registros disponibles"}</span></div></div>
   </section>;
 }
 
@@ -329,35 +464,37 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
             if (chargeError) throw chargeError;
             charge = createdCharge;
           }
-          const { error } = await supabase.rpc("register_cash_payment", {
+          const { error } = await supabase.rpc("register_student_payment", {
             p_student_id: student.id, p_account_id: account.id, p_method: "efectivo",
-            p_notes: concept.trim(), p_allocations: [{ charge_id: charge.id, amount: Number(amount) }],
+            p_notes: concept.trim(), p_paid_on: date,
+            p_allocations: [{ charge_id: charge.id, amount: Number(amount) }],
           });
           if (error) throw error;
         } else {
-          const { error } = await supabase.from("incomes").insert({
-            student_id: student?.id ?? null, account_id: account.id, paid_on: date,
-            amount: Number(amount), payment_method: "transferencia",
-            bank_reference: reference.trim() || null, created_by: user.id,
-          });
-          if (error) throw error;
+          const { data: charge } = student
+            ? await supabase.from("charges").select("id,net_amount,paid_amount").eq("student_id", student.id).in("status", ["pendiente", "parcial", "vencido"]).order("due_on", { ascending: true }).limit(1).maybeSingle()
+            : { data: null };
+          if (student && charge) {
+            const balance = Number(charge.net_amount) - Number(charge.paid_amount);
+            if (Number(amount) > balance) throw new Error(`El saldo pendiente es ${money.format(balance)}.`);
+            const { error } = await supabase.rpc("register_student_payment", {
+              p_student_id: student.id, p_account_id: account.id, p_method: "transferencia",
+              p_notes: reference.trim() || "Transferencia", p_paid_on: date,
+              p_allocations: [{ charge_id: charge.id, amount: Number(amount) }],
+            });
+            if (error) throw error;
+          } else {
+            const { error } = await supabase.from("incomes").insert({
+              student_id: student?.id ?? null, account_id: account.id, paid_on: date,
+              amount: Number(amount), payment_method: "transferencia",
+              bank_reference: reference.trim() || null, created_by: user.id,
+            });
+            if (error) throw error;
+          }
         }
         window.dispatchEvent(new Event("cei:data-changed"));
         close();
         return;
-      } else if (payment && false) {
-        const accountName = type === "cobro" ? "Caja administración" : "Banco principal";
-        const { data: account } = await supabase.from("accounts").select("id").eq("name", accountName).single();
-        if (!account) throw new Error("No hay una cuenta financiera configurada.");
-        const { data: student } = name.trim()
-          ? await supabase.from("students").select("id").or(`enrollment.ilike.%${name.trim()}%,first_name.ilike.%${name.trim()}%,last_name.ilike.%${name.trim()}%`).limit(1).maybeSingle()
-          : { data: null };
-        const { error } = await supabase.from("incomes").insert({
-          student_id: student?.id ?? null, account_id: account!.id, paid_on: date,
-          amount: Number(amount), payment_method: type === "cobro" ? "efectivo" : "transferencia",
-          bank_reference: reference.trim() || null, created_by: user!.id,
-        });
-        if (error) throw error;
       } else if (type === "Egresos") {
         const { data: account } = await supabase.from("accounts").select("id").eq("name", "Caja administración").single();
         const { data: category } = await supabase.from("expense_categories").select("id").eq("name", "Servicios").single();
@@ -381,6 +518,7 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
       } else {
         throw new Error("Este módulo todavía requiere conectar su formulario específico.");
       }
+      window.dispatchEvent(new Event("cei:data-changed"));
       close();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "No se pudo guardar el registro.");

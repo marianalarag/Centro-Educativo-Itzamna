@@ -1,0 +1,11 @@
+Matricula,Nombre,Nivel,Grado,Tutor,Telefono,Correo,Concepto,Monto,Fecha limite,Fecha pago,Forma de pago
+CEI-0301,Sofia Martinez Pech,Primaria,4 Primaria,Laura Pech,9992148801,laura@example.com,Colegiatura,3250,2026-06-10,2026-06-08,Efectivo
+CEI-0302,Mauricio Torres Solis,Primaria,3 Primaria,Daniel Torres,9993185520,daniel@example.com,Colegiatura,3250,2026-06-10,2026-06-10,Transferencia
+CEI-0303,Ana Paula Diaz Cervera,Primaria,2 Primaria,Monica Diaz,9991027743,monica@example.com,Colegiatura,3250,2026-06-10,2026-06-05,Tarjeta
+CEI-0304,Valentina Lopez May,Primaria,5 Primaria,Carlos Lopez,,,Colegiatura,3250,2026-06-10,2026-06-09,Efectivo
+CEI-0305,Jose Pech Chan,Primaria,1 Primaria,Maria Chan,,,Colegiatura,3250,2026-06-10,2026-06-14,Transferencia
+CEI-0306,Mariana Solis Poot,Primaria,6 Primaria,Arturo Solis,,,Colegiatura,3250,2026-06-10,2026-06-18,Efectivo
+CEI-0307,Emiliano Mendez Ku,Primaria,3 Primaria,Rebeca Ku,,,Colegiatura,3250,2026-06-10,2026-06-12,Transferencia
+CEI-0308,Camila Gongora Pool,Primaria,2 Primaria,Ivan Pool,,,Colegiatura,3250,2026-06-10,,Efectivo
+CEI-0309,Leonardo Canto Uc,Primaria,4 Primaria,Paola Canto,,,Colegiatura,3250,2026-06-10,,Efectivo
+CEI-0310,Regina Sanchez Ek,Primaria,1 Primaria,Fernando Ek,,,Colegiatura,3250,2026-06-10,,Efectivo
