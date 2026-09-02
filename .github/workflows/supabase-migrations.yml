@@ -28,16 +28,35 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Check migration credentials
+        id: credentials
+        shell: bash
+        run: |
+          if [[ -n "$SUPABASE_ACCESS_TOKEN" && -n "$SUPABASE_DB_PASSWORD" ]]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Supabase migrations skipped::Add SUPABASE_ACCESS_TOKEN and SUPABASE_DB_PASSWORD as repository or Production environment secrets to enable automatic migrations."
+          fi
+
       - name: Install Supabase CLI
+        if: steps.credentials.outputs.configured == 'true'
         uses: supabase/setup-cli@v1
         with:
           version: latest
 
       - name: Link production project
+        if: steps.credentials.outputs.configured == 'true'
         run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
 
       - name: Preview pending migrations
+        if: steps.credentials.outputs.configured == 'true'
         run: supabase db push --dry-run
 
       - name: Apply pending migrations
+        if: steps.credentials.outputs.configured == 'true'
         run: supabase db push
+
+      - name: Migration status
+        if: steps.credentials.outputs.configured != 'true'
+        run: echo "Automatic database migrations are disabled until the required GitHub secrets are configured."
