@@ -11,6 +11,12 @@ function rowStatus(row: StudentImportRow) {
   return { label: "Pagado", tone: "paid" };
 }
 
+function expectedTotal(row: StudentImportRow) {
+  return row.paid_on && row.due_on && row.paid_on > row.due_on
+    ? row.amount * (1 + row.late_fee_rate / 100)
+    : row.amount;
+}
+
 export function StudentImportModal({
   close,
   role,
@@ -69,10 +75,11 @@ export function StudentImportModal({
       return;
     }
 
-    const result = data as { students?: number; payments?: number; expenses?: number } | null;
+    const result = data as { students?: number; payments?: number; expenses?: number; late_fees?: number } | null;
+    const lateFees = Number(result?.late_fees ?? 0);
     setMessage(
       `Listo: ${result?.students ?? rows.length} alumnos, ${result?.payments ?? 0} ingresos` +
-      (demoMode ? ` y ${result?.expenses ?? 0} egresos nuevos.` : "."),
+      (demoMode ? ` y ${result?.expenses ?? 0} egresos nuevos.` : lateFees > 0 ? ` y ${lateFees.toLocaleString("es-MX", { style: "currency", currency: "MXN" })} en recargos.` : "."),
     );
     window.dispatchEvent(new Event("cei:data-changed"));
     setBusy(false);
@@ -108,7 +115,7 @@ export function StudentImportModal({
 
       {!!rows.length && <div className="importPreview">
         <table>
-          <thead><tr><th>Matrícula</th><th>Alumno</th><th>Grado</th><th>Monto</th><th>Estado esperado</th></tr></thead>
+          <thead><tr><th>Matrícula</th><th>Alumno</th><th>Grado</th><th>Base</th><th>Total esperado</th><th>Estado esperado</th></tr></thead>
           <tbody>{rows.slice(0, 10).map((row) => {
             const status = rowStatus(row);
             return <tr key={row.enrollment}>
@@ -116,6 +123,7 @@ export function StudentImportModal({
               <td className="person">{row.first_name} {row.last_name}</td>
               <td>{row.grade}</td>
               <td>{row.amount ? row.amount.toLocaleString("es-MX", { style: "currency", currency: "MXN" }) : "Sin cargo"}</td>
+              <td>{expectedTotal(row).toLocaleString("es-MX", { style: "currency", currency: "MXN" })}</td>
               <td><span className={`paymentBadge ${status.tone}`}>{status.label}</span></td>
             </tr>;
           })}</tbody>

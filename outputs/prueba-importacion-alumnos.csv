@@ -1,0 +1,11 @@
+Matricula,Nombre,Nivel,Grado,Tutor,Telefono,Correo,Concepto,Monto,Recargo por atraso (%),Fecha limite,Fecha pago,Forma de pago
+CEI-0401,Daniela Ruiz May,Primaria,1 Primaria,Teresa May,9994101001,teresa.may@example.com,Colegiatura,3250,10,2026-07-10,2026-07-08,Efectivo
+CEI-0402,Santiago Perez Ku,Primaria,2 Primaria,Ricardo Perez,9994101002,ricardo.perez@example.com,Colegiatura,3250,10,2026-07-10,2026-07-10,Transferencia
+CEI-0403,Renata Canto Pech,Primaria,3 Primaria,Silvia Pech,9994101003,silvia.pech@example.com,Colegiatura,3250,10,2026-07-10,2026-07-05,Tarjeta
+CEI-0404,Gael Medina Uc,Primaria,4 Primaria,Oscar Medina,9994101004,oscar.medina@example.com,Colegiatura,3250,10,2026-07-10,2026-07-09,Efectivo
+CEI-0405,Isabella Poot Chan,Primaria,5 Primaria,Elena Chan,9994101005,elena.chan@example.com,Colegiatura,3250,10,2026-07-10,2026-07-13,Transferencia
+CEI-0406,Matias Solis Ek,Primaria,6 Primaria,Patricia Solis,9994101006,patricia.solis@example.com,Colegiatura,3250,10,2026-07-10,2026-07-16,Efectivo
+CEI-0407,Ximena Lopez Pool,Primaria,1 Primaria,Jorge Lopez,9994101007,jorge.lopez@example.com,Colegiatura,3250,10,2026-07-10,2026-07-20,Transferencia
+CEI-0408,Emiliano Torres Dzib,Primaria,2 Primaria,Adriana Dzib,9994101008,adriana.dzib@example.com,Colegiatura,3250,10,2026-07-10,,Efectivo
+CEI-0409,Victoria Gongora Can,Primaria,3 Primaria,Miguel Gongora,9994101009,miguel.gongora@example.com,Colegiatura,3250,10,2026-07-10,,Efectivo
+CEI-0410,Nicolas Herrera Tun,Primaria,4 Primaria,Claudia Herrera,9994101010,claudia.herrera@example.com,Colegiatura,3250,10,2026-07-10,,Transferencia

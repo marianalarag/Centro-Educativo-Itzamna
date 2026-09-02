@@ -12,6 +12,7 @@ export type StudentImportRow = {
   tutor_email: string | null;
   concept: string;
   amount: number;
+  late_fee_rate: number;
   due_on: string;
   paid_on: string | null;
   payment_method: "efectivo" | "transferencia" | "tarjeta" | "otro";
@@ -36,6 +37,7 @@ const aliases: Record<string, string[]> = {
   tutor_email: ["correo", "email", "correo tutor"],
   concept: ["concepto", "concepto de pago"],
   amount: ["monto", "importe", "cargo", "colegiatura"],
+  late_fee_rate: ["recargo por atraso", "recargo por atraso (%)", "recargo", "porcentaje recargo"],
   due_on: ["fecha limite", "fecha límite", "vencimiento", "fecha vencimiento"],
   paid_on: ["fecha pago", "fecha de pago", "pagado el"],
   payment_method: ["forma de pago", "metodo de pago", "método de pago"],
@@ -125,6 +127,8 @@ function rowsFromMatrix(matrix: Cell[][]): ParsedStudentFile {
     const enrollment = text(get(rawRow, "enrollment"));
     const grade = text(get(rawRow, "grade"));
     const amount = amountFrom(get(rawRow, "amount"));
+    const rawLateRate = amountFrom(get(rawRow, "late_fee_rate"));
+    const lateFeeRate = indexes.late_fee_rate >= 0 && Number.isFinite(rawLateRate) ? rawLateRate : 10;
     const dueOn = toIsoDate(get(rawRow, "due_on"));
     const paidRaw = get(rawRow, "paid_on");
     const paidOn = text(paidRaw) ? toIsoDate(paidRaw) : null;
@@ -134,6 +138,7 @@ function rowsFromMatrix(matrix: Cell[][]): ParsedStudentFile {
     if (!firstName) rowErrors.push("nombre vacío");
     if (!grade) rowErrors.push("grado vacío");
     if (indexes.amount >= 0 && (!Number.isFinite(amount) || amount <= 0)) rowErrors.push("monto inválido");
+    if (lateFeeRate < 0 || lateFeeRate > 100) rowErrors.push("recargo inválido");
     if (indexes.due_on >= 0 && !dueOn) rowErrors.push("fecha límite inválida");
     if (text(paidRaw) && !paidOn) rowErrors.push("fecha de pago inválida");
     if (rowErrors.length) {
@@ -152,6 +157,7 @@ function rowsFromMatrix(matrix: Cell[][]): ParsedStudentFile {
       tutor_email: text(get(rawRow, "tutor_email")) || null,
       concept: text(get(rawRow, "concept")) || "Colegiatura",
       amount: indexes.amount >= 0 ? amount : 0,
+      late_fee_rate: lateFeeRate,
       due_on: dueOn,
       paid_on: paidOn,
       payment_method: paymentMethod(get(rawRow, "payment_method")),
@@ -199,6 +205,7 @@ export const demoStudents: StudentImportRow[] = [
   tutor_email: null,
   concept: "Colegiatura",
   amount: 3250,
+  late_fee_rate: 10,
   due_on: dueOn as string,
   paid_on: paidOn as string | null,
   payment_method: method as StudentImportRow["payment_method"],
