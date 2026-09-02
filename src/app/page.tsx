@@ -9,6 +9,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { StudentImportModal } from "@/components/student-import-modal";
+import { ChargeModal } from "@/components/charge-modal";
 
 const nav = [
   ["Inicio", BookOpen], ["Alumnos", Users], ["Cobros", CircleDollarSign],
@@ -38,6 +39,7 @@ type PaymentStatusRow = {
   grade: string;
   concept: string | null;
   net_amount: number | null;
+  late_fee_amount: number | null;
   paid_amount: number | null;
   balance: number | null;
   due_on: string | null;
@@ -118,7 +120,7 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
         supabase.from("expenses").select("id,total,spent_on,payment_method,description").eq("status", "confirmado").order("spent_on", { ascending: false }).limit(1000),
         supabase.from("students").select("id,first_name,last_name"),
         supabase.from("charges").select("net_amount,paid_amount").in("status", ["pendiente", "parcial", "vencido"]),
-        supabase.from("student_payment_status").select("student_id,enrollment,first_name,last_name,grade,concept,net_amount,paid_amount,balance,due_on,paid_on,payment_status").order("enrollment").limit(50),
+        supabase.from("student_payment_status").select("student_id,enrollment,first_name,last_name,grade,concept,net_amount,late_fee_amount,paid_amount,balance,due_on,paid_on,payment_status").order("enrollment").limit(50),
       ]);
       const studentMap = new Map((students ?? []).map((student) => [student.id, `${student.first_name} ${student.last_name}`]));
       const incomeRows: MovementRow[] = (incomes ?? []).map((income) => [
@@ -215,6 +217,12 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
             <button onClick={() => go("Reportes")}>Consultar reportes →</button>
           </section>
 
+          {summary.unpaid > 0 && <button className="unpaidBanner" onClick={() => go("Cobros")}>
+            <span><AlertTriangle size={22} /></span>
+            <div><strong>{summary.unpaid} {summary.unpaid === 1 ? "alumno tiene" : "alumnos tienen"} pagos pendientes</strong><small>Hay {money.format(summary.pending)} por cobrar. Abre Cobros para revisar los adeudos.</small></div>
+            <b>Revisar adeudos</b>
+          </button>}
+
           <section className="panel paymentPanel">
             <div className="paymentPanelHead">
               <div><h2>Estado de pagos por alumno</h2><p>Último cargo registrado en el ciclo activo</p></div>
@@ -225,14 +233,14 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
               </div>
             </div>
             <div className="tableWrap"><table className="paymentTable">
-              <thead><tr><th>Matrícula</th><th>Alumno</th><th>Grado</th><th>Concepto</th><th>Vencimiento</th><th>Pagado</th><th>Saldo</th><th>Estado</th></tr></thead>
+              <thead><tr><th>Matrícula</th><th>Alumno</th><th>Grado</th><th>Concepto</th><th>Vencimiento</th><th>Recargo</th><th>Pagado</th><th>Saldo</th><th>Estado</th></tr></thead>
               <tbody>{paymentStatuses.slice(0, 10).map((row) => {
                 const status = paymentStatusPresentation(row.payment_status);
                 return <tr key={row.student_id}>
                   <td data-label="Matrícula"><button className="folio">{row.enrollment}</button></td>
                   <td data-label="Alumno" className="person">{row.first_name} {row.last_name}</td>
                   <td data-label="Grado">{row.grade}</td><td data-label="Concepto">{row.concept ?? "Sin cargo"}</td>
-                  <td data-label="Vencimiento">{formatDate(row.due_on)}</td><td data-label="Pagado">{money.format(Number(row.paid_amount ?? 0))}</td>
+                  <td data-label="Vencimiento">{formatDate(row.due_on)}</td><td data-label="Recargo" className={Number(row.late_fee_amount) > 0 ? "financialWarning" : ""}>{money.format(Number(row.late_fee_amount ?? 0))}</td><td data-label="Pagado">{money.format(Number(row.paid_amount ?? 0))}</td>
                   <td data-label="Saldo" className={Number(row.balance) > 0 ? "financialNegative" : "financialPositive"}>{money.format(Number(row.balance ?? 0))}</td>
                   <td data-label="Estado"><span className={`paymentBadge ${status.tone}`}>{status.label}</span></td>
                 </tr>;
@@ -259,6 +267,8 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
 
       {modal === "importar-alumnos"
         ? <StudentImportModal close={() => setModal(null)} role={userRole} />
+        : modal === "cobro"
+          ? <ChargeModal close={() => setModal(null)} />
         : modal && <QuickForm type={modal} close={() => setModal(null)} />}
     </div>
   );
@@ -266,7 +276,7 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
 
 const moduleData: Record<string, { title: string; subtitle: string; action: string; headers: string[]; rows: string[][] }> = {
   Alumnos: { title: "Alumnos", subtitle: "Matrícula y datos de contacto del ciclo actual", action: "Nuevo alumno", headers: ["Matrícula","Nombre","Grado","Tutor","Teléfono","Estado"], rows: [["CEI-0251","Sofía Martínez Pech","4° Primaria","Laura Pech","999 214 8801","Activo"],["CEI-0184","Mauricio Torres Solís","3° Primaria","Daniel Torres","999 318 5520","Activo"],["CEI-0278","Ana Paula Díaz","2° Primaria","Mónica Díaz","999 102 7743","Activo"]] },
-  Cobros: { title: "Cobros y adeudos", subtitle: "Saldos por alumno, concepto y mes", action: "Nuevo cobro", headers: ["Alumno","Concepto","Mes","Cargo","Pagado","Saldo","Estado"], rows: [["Sofía Martínez Pech","Colegiatura","10 · Junio","$3,250","$3,250","$0","Pagado"],["Mauricio Torres Solís","Colegiatura","9 · Mayo","$3,250","$3,200","$50","Parcial"],["Carlos Méndez Poot","Colegiatura","10 · Junio","$3,250","$0","$3,250","Pendiente"]] },
+  Cobros: { title: "Cobros y adeudos", subtitle: "Saldos, recargos y estado por alumno", action: "Nuevo cobro", headers: ["Alumno","Concepto","Vencimiento","Cargo","Recargo","Pagado","Saldo","Estado"], rows: [] },
   Ingresos: { title: "Ingresos", subtitle: "Efectivo, transferencias y depósitos por identificar", action: "Registrar transferencia", headers: ["Folio","Fecha","Alumno","Concepto","Forma","Importe","Conciliación"], rows: [["REC-00482","30 jun 2026","Sofía Martínez","Colegiatura","Efectivo","$3,250","Conciliado"],["TRF-00219","30 jun 2026","Mauricio Torres","Saldo colegiatura","Transferencia","$50","Pendiente"],["TRF-00218","29 jun 2026","Sin identificar","Por asignar","Transferencia","$3,250","No identificado"]] },
   Conciliación: { title: "Conciliación bancaria", subtitle: "Compara los movimientos semanales del banco contra los ingresos capturados", action: "Importar movimientos", headers: ["Fecha banco","Referencia","Depósito","Alumno sugerido","Ingreso registrado","Diferencia","Estado"], rows: [["30 jun 2026","MAURICIO TORRES 3A","$50","Mauricio Torres","$50","$0","Conciliado"],["29 jun 2026","PAGO COLEGIATURA","$3,250","Sin coincidencia","—","$3,250","No identificado"],["28 jun 2026","SOFIA MP JUNIO","$3,250","Sofía Martínez","$3,250","$0","Conciliado"]] },
   Egresos: { title: "Egresos", subtitle: "Costos, gastos y salidas de las cajas", action: "Nuevo egreso", headers: ["Folio","Fecha","Tipo","Partida","Descripción","Caja","Total"], rows: [["EGR-00176","29 jun 2026","Gasto","Servicios","Agua · JAPAY","Caja PyME","$1,840"],["EGR-00175","28 jun 2026","Costo","Material escolar","Papelería del mes","Caja administración","$2,460"],["EGR-00174","27 jun 2026","Gasto","Mantenimiento","Reparación de bomba","Caja PyME","$3,800"]] },
@@ -298,13 +308,13 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
         if (name === "Alumnos" || name === "Cobros") {
           const { data: statuses, error } = await supabase
             .from("student_payment_status")
-            .select("student_id,enrollment,first_name,last_name,level,grade,tutor_name,tutor_phone,concept,net_amount,paid_amount,balance,due_on,paid_on,payment_status")
+            .select("student_id,enrollment,first_name,last_name,level,grade,tutor_name,tutor_phone,concept,net_amount,late_fee_amount,paid_amount,balance,due_on,paid_on,payment_status")
             .order("enrollment");
           if (error) throw error;
           const items = (statuses ?? []) as Array<PaymentStatusRow & { level: string; tutor_name: string | null; tutor_phone: string | null }>;
           setRows(name === "Alumnos"
             ? items.map((item) => [item.enrollment, `${item.first_name} ${item.last_name}`, `${item.grade} · ${item.level}`, item.tutor_name ?? "—", item.tutor_phone ?? "—", paymentStatusPresentation(item.payment_status).label])
-            : items.map((item) => [`${item.first_name} ${item.last_name}`, item.concept ?? "Sin cargo", formatDate(item.due_on), money.format(Number(item.net_amount ?? 0)), money.format(Number(item.paid_amount ?? 0)), money.format(Number(item.balance ?? 0)), paymentStatusPresentation(item.payment_status).label]));
+            : items.map((item) => [`${item.first_name} ${item.last_name}`, item.concept ?? "Sin cargo", formatDate(item.due_on), money.format(Number(item.net_amount ?? 0)), money.format(Number(item.late_fee_amount ?? 0)), money.format(Number(item.paid_amount ?? 0)), money.format(Number(item.balance ?? 0)), paymentStatusPresentation(item.payment_status).label]));
         } else if (name === "Ingresos") {
           const [{ data: incomes, error }, { data: students }] = await Promise.all([
             supabase.from("incomes").select("id,paid_on,student_id,payment_method,amount,reconciliation_status").eq("status", "confirmado").order("paid_on", { ascending: false }).limit(100),
@@ -351,7 +361,7 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
       const isStatus = data.headers[j] === "Estado";
       const statusTone = cell === "Pagado" ? "paid" : cell === "Pagó con retardo" ? "late" : cell === "No ha pagado" ? "unpaid" : "";
       return <td data-label={data.headers[j]} className={[j===1?"person":"", getFinancialTone(name, data.headers[j], cell, row)].filter(Boolean).join(" ")} key={j}>{isStatus && statusTone ? <span className={`paymentBadge ${statusTone}`}>{cell}</span> : cell}</td>;
-    })}</tr>)}</tbody></table>{loading && <div className="empty">Cargando registros…</div>}{!loading && !visibleRows.length && !loadError && <div className="empty">No hay registros para mostrar.</div>}{loadError && <div className="empty errorText">{loadError}</div>}</div><div className="panelFooter"><span>{visibleRows.length} {liveModule ? "registros de Supabase" : "registros disponibles"}</span></div></div>
+    })}</tr>)}</tbody></table>{loading && <div className="empty">Cargando registros…</div>}{!loading && !visibleRows.length && !loadError && <div className="empty">No hay registros para mostrar.</div>}{loadError && <div className="empty errorText">{loadError}</div>}</div><div className="panelFooter"><span>{visibleRows.length} registros disponibles</span></div></div>
   </section>;
 }
 
@@ -402,7 +412,7 @@ function QuickFormLegacy({ type, close }: { type: string; close: () => void }) {
       : <><label>Descripción o nombre<input required placeholder={`Datos principales para ${type.toLowerCase()}…`} /></label>
       <div className="formRow"><label>Fecha<input required type="date" defaultValue="2026-06-30" /></label><label>Importe o valor<input required placeholder={type === "Alumnos" ? "Grado / matrícula" : "$ 0.00"} /></label></div>
       <label>Observaciones<textarea placeholder="Información adicional…" /></label>
-      <p className="formNote">Este formulario se conectará al registro definitivo de Supabase; por ahora permite validar el flujo y los campos con la coordinadora.</p></>}
+      <p className="formNote">Revisa los datos antes de confirmar el registro.</p></>}
       <div className="modalActions"><button type="button" className="secondary" onClick={close}>Cancelar</button><button className="primary">Confirmar registro</button></div>
     </form>
   </div>;
@@ -539,7 +549,7 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
         {type === "Alumnos" && <label>Grado<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Ej. 4° Primaria" /></label>}
       </>}
       {message && <p className="formError">{message}</p>}
-      <div className="modalActions"><button type="button" className="secondary" onClick={close}>Cancelar</button><button className="primary" disabled={busy}>{busy ? "Guardando…" : "Guardar en Supabase"}</button></div>
+      <div className="modalActions"><button type="button" className="secondary" onClick={close}>Cancelar</button><button className="primary" disabled={busy}>{busy ? "Guardando…" : "Guardar registro"}</button></div>
     </form>
   </div>;
 }
