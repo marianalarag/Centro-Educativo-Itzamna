@@ -51,7 +51,7 @@ export function ReportCenter() {
       setError("");
       const [statusResult, incomeResult, expenseResult, studentResult] = await Promise.all([
         supabase.from("student_payment_status").select("student_id,enrollment,first_name,last_name,grade,concept,net_amount,late_fee_amount,paid_amount,balance,due_on,paid_on,payment_status").order("enrollment"),
-        supabase.from("incomes").select("id,paid_on,student_id,payment_method,reference,amount,status").eq("status", "confirmado").order("paid_on", { ascending: false }),
+        supabase.from("incomes").select("id,paid_on,student_id,payment_method,bank_reference,amount,status").eq("status", "confirmado").order("paid_on", { ascending: false }),
         supabase.from("expenses").select("id,spent_on,supplier,description,payment_method,total,status").eq("status", "confirmado").order("spent_on", { ascending: false }),
         supabase.from("students").select("id,enrollment,first_name,last_name,grade"),
       ]);
@@ -90,7 +90,7 @@ export function ReportCenter() {
         headers: ["Folio", "Fecha", "Matrícula", "Alumno", "Forma", "Referencia", "Importe"],
         rows: incomes.filter((row) => inRange(row.paid_on) && (grade === "todos" || studentMap.get(String(row.student_id))?.grade === grade)).map((row) => {
           const student = studentMap.get(String(row.student_id));
-          return [`ING-${String(row.id).slice(0, 6).toUpperCase()}`, String(row.paid_on ?? ""), String(student?.enrollment ?? ""), student ? `${student.first_name} ${student.last_name}` : "Sin identificar", String(row.payment_method ?? ""), String(row.reference ?? ""), Number(row.amount ?? 0)];
+          return [`ING-${String(row.id).slice(0, 6).toUpperCase()}`, String(row.paid_on ?? ""), String(student?.enrollment ?? ""), student ? `${student.first_name} ${student.last_name}` : "Sin identificar", String(row.payment_method ?? ""), String(row.bank_reference ?? ""), Number(row.amount ?? 0)];
         }),
       };
     }
