@@ -2,7 +2,7 @@
 
 import {
   AlertTriangle, ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Banknote, Bell,
-  BookOpen, CheckCircle2, ChevronDown, CircleDollarSign, ClipboardList,
+  BookOpen, CheckCheck, CheckCircle2, ChevronDown, CircleDollarSign, ClipboardList,
   Clock3, FileText, GraduationCap, LogOut, Menu, Plus, Search, Upload, Users, X,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
@@ -10,6 +10,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { StudentImportModal } from "@/components/student-import-modal";
 import { ChargeModal } from "@/components/charge-modal";
+import { ReportCenter } from "@/components/report-center";
 
 const nav = [
   ["Inicio", BookOpen], ["Alumnos", Users], ["Cobros", CircleDollarSign],
@@ -72,8 +73,13 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
   const supabase = useMemo(() => createClient(), []);
   const [active, setActive] = useState(initialActive);
   const [query, setQuery] = useState("");
+  const [movementType, setMovementType] = useState("todos");
+  const [dashboardGrade, setDashboardGrade] = useState("todos");
+  const [dashboardStatus, setDashboardStatus] = useState("todos");
   const [menu, setMenu] = useState(false);
   const [modal, setModal] = useState<string | null>(null);
+  const [notificationOpen, setNotificationOpen] = useState(false);
+  const [readNotifications, setReadNotifications] = useState<string[]>([]);
   const [authChecking, setAuthChecking] = useState(true);
   const [dbMovements, setDbMovements] = useState<MovementRow[]>([]);
   const [paymentStatuses, setPaymentStatuses] = useState<PaymentStatusRow[]>([]);
@@ -82,7 +88,48 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
   const [userRole, setUserRole] = useState("captura");
   const displayMovements: readonly MovementRow[] = dbMovements;
   const visible = useMemo(() => displayMovements.filter((m) =>
-    m.join(" ").toLocaleLowerCase("es").includes(query.toLocaleLowerCase("es"))), [displayMovements, query]);
+    m.join(" ").toLocaleLowerCase("es").includes(query.toLocaleLowerCase("es")) &&
+    (movementType === "todos" || m[6] === movementType)), [displayMovements, movementType, query]);
+  const dashboardGrades = useMemo(() => Array.from(new Set(paymentStatuses.map((row) => row.grade).filter(Boolean))).sort(), [paymentStatuses]);
+  const visiblePaymentStatuses = useMemo(() => paymentStatuses.filter((row) =>
+    (dashboardGrade === "todos" || row.grade === dashboardGrade) &&
+    (dashboardStatus === "todos" || row.payment_status === dashboardStatus)), [dashboardGrade, dashboardStatus, paymentStatuses]);
+  const notifications = useMemo(() => [
+    ...paymentStatuses.filter((row) => row.payment_status === "no_pagado").map((row) => ({
+      id: `unpaid-${row.student_id}-${row.due_on}`,
+      type: "unpaid",
+      title: `${row.first_name} ${row.last_name} tiene un pago pendiente`,
+      detail: `${row.concept ?? "Cargo escolar"} · ${money.format(Number(row.balance ?? 0))} · venció ${formatDate(row.due_on)}`,
+      target: "Cobros",
+    })),
+    ...paymentStatuses.filter((row) => row.payment_status === "pagado_retraso").slice(0, 3).map((row) => ({
+      id: `late-${row.student_id}-${row.paid_on}`,
+      type: "late",
+      title: `Pago con retraso de ${row.first_name} ${row.last_name}`,
+      detail: `${money.format(Number(row.paid_amount ?? 0))}${Number(row.late_fee_amount) > 0 ? ` · incluye ${money.format(Number(row.late_fee_amount))} de recargo` : ""}`,
+      target: "Cobros",
+    })),
+    ...dbMovements.filter((movement) => movement[6] === "Ingreso").slice(0, 4).map((movement) => ({
+      id: `income-${movement[0]}`,
+      type: "payment",
+      title: `Pago recibido de ${movement[2]}`,
+      detail: `${money.format(movement[5])} · ${movement[1]} · ${movement[4]}`,
+      target: "Ingresos",
+    })),
+  ], [dbMovements, paymentStatuses]);
+  const unreadNotifications = notifications.filter((item) => !readNotifications.includes(item.id)).length;
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      try {
+        const stored = window.localStorage.getItem("cei:read-notifications");
+        if (stored) setReadNotifications(JSON.parse(stored) as string[]);
+      } catch {
+        window.localStorage.removeItem("cei:read-notifications");
+      }
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -144,8 +191,17 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
       });
     }
     loadDashboard();
+    const interval = window.setInterval(loadDashboard, 60_000);
+    const channel = supabase.channel("dashboard-notifications")
+      .on("postgres_changes", { event: "*", schema: "public", table: "incomes" }, loadDashboard)
+      .on("postgres_changes", { event: "*", schema: "public", table: "charges" }, loadDashboard)
+      .subscribe();
     window.addEventListener("cei:data-changed", loadDashboard);
-    return () => window.removeEventListener("cei:data-changed", loadDashboard);
+    return () => {
+      window.clearInterval(interval);
+      supabase.removeChannel(channel);
+      window.removeEventListener("cei:data-changed", loadDashboard);
+    };
   }, [supabase]);
 
   const go = (name: string) => {
@@ -158,6 +214,18 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
   async function signOut() {
     await supabase.auth.signOut();
     router.replace("/login");
+  }
+
+  function markNotificationsRead(ids = notifications.map((item) => item.id)) {
+    const next = Array.from(new Set([...readNotifications, ...ids]));
+    setReadNotifications(next);
+    window.localStorage.setItem("cei:read-notifications", JSON.stringify(next));
+  }
+
+  function openNotification(item: (typeof notifications)[number]) {
+    markNotificationsRead([item.id]);
+    setNotificationOpen(false);
+    go(item.target);
   }
 
   if (authChecking) return <div className="authLoading">Comprobando sesión…</div>;
@@ -189,12 +257,17 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
         <header>
           <button className="menuButton" onClick={() => setMenu(true)}><Menu size={22} /></button>
           <div className="cycle"><span>Ciclo escolar</span><button>2025 – 2026 <ChevronDown size={15} /></button></div>
-          <div className="headerRight"><button className="iconButton" aria-label="Notificaciones"><Bell size={20} /><i /></button></div>
+          <div className="headerRight notificationArea"><button className="iconButton notificationBell" aria-label="Notificaciones" aria-expanded={notificationOpen} onClick={() => setNotificationOpen((open) => !open)}><Bell size={20} />{unreadNotifications > 0 && <em>{unreadNotifications > 9 ? "9+" : unreadNotifications}</em>}</button>
+            {notificationOpen && <div className="notificationPanel">
+              <div className="notificationHead"><div><strong>Notificaciones</strong><span>{unreadNotifications ? `${unreadNotifications} sin leer` : "Todo al día"}</span></div>{unreadNotifications > 0 && <button onClick={() => markNotificationsRead()}><CheckCheck size={15}/>Marcar leídas</button>}</div>
+              <div className="notificationList">{notifications.slice(0, 10).map((item) => <button key={item.id} className={`${item.type} ${readNotifications.includes(item.id) ? "read" : ""}`} onClick={() => openNotification(item)}><span>{item.type === "unpaid" ? <AlertTriangle size={17}/> : item.type === "late" ? <Clock3 size={17}/> : <CircleDollarSign size={17}/>}</span><div><strong>{item.title}</strong><small>{item.detail}</small></div>{!readNotifications.includes(item.id) && <i/>}</button>)}{!notifications.length && <div className="notificationEmpty"><CheckCircle2 size={24}/><span>No hay avisos pendientes</span></div>}</div>
+            </div>}
+          </div>
         </header>
 
         <div className="content">
           {active !== "Inicio" ? (
-            <ModuleView name={active} openForm={setModal} />
+            active === "Reportes" ? <ReportCenter /> : <ModuleView key={active} name={active} openForm={setModal} />
           ) : <>
           <section className="welcome">
             <div><p className="eyebrow">OPERACIÓN DEL DÍA</p><h1>¿Qué necesitas registrar?</h1><p>Accede a las tareas habituales de caja y revisa los últimos movimientos.</p></div>
@@ -226,6 +299,7 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
           <section className="panel paymentPanel">
             <div className="paymentPanelHead">
               <div><h2>Estado de pagos por alumno</h2><p>Último cargo registrado en el ciclo activo</p></div>
+              <div className="dashboardFilters"><label><span>Salón</span><select value={dashboardGrade} onChange={(event) => setDashboardGrade(event.target.value)}><option value="todos">Todos</option>{dashboardGrades.map((grade) => <option key={grade}>{grade}</option>)}</select></label><label><span>Estado</span><select value={dashboardStatus} onChange={(event) => setDashboardStatus(event.target.value)}><option value="todos">Todos</option><option value="pagado">Pagado</option><option value="pagado_retraso">Con retardo</option><option value="no_pagado">No ha pagado</option></select></label></div>
               <div className="paymentCounters">
                 <span className="paid"><CheckCircle2 size={16} /><b>{summary.paid}</b> Pagaron</span>
                 <span className="late"><Clock3 size={16} /><b>{summary.late}</b> Con retardo</span>
@@ -234,7 +308,7 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
             </div>
             <div className="tableWrap"><table className="paymentTable">
               <thead><tr><th>Matrícula</th><th>Alumno</th><th>Grado</th><th>Concepto</th><th>Vencimiento</th><th>Recargo</th><th>Pagado</th><th>Saldo</th><th>Estado</th></tr></thead>
-              <tbody>{paymentStatuses.slice(0, 10).map((row) => {
+              <tbody>{visiblePaymentStatuses.slice(0, 10).map((row) => {
                 const status = paymentStatusPresentation(row.payment_status);
                 return <tr key={row.student_id}>
                   <td data-label="Matrícula"><button className="folio">{row.enrollment}</button></td>
@@ -245,13 +319,13 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
                   <td data-label="Estado"><span className={`paymentBadge ${status.tone}`}>{status.label}</span></td>
                 </tr>;
               })}</tbody>
-            </table>{!paymentStatuses.length && <div className="empty">Aún no hay alumnos con cargos. Importa una lista o registra el primer alumno.</div>}</div>
+            </table>{!visiblePaymentStatuses.length && <div className="empty">No hay alumnos que coincidan con los filtros.</div>}</div>
           </section>
 
           <section className="panel movements">
             <div className="movementHead">
               <div><h2>Movimientos recientes</h2><p>Ingresos y egresos registrados</p></div>
-              <label className="search"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar alumno o folio" /></label>
+              <div className="movementFilters"><label className="search"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar alumno o folio" /></label><label className="compactFilter"><span>Tipo</span><select value={movementType} onChange={(event) => setMovementType(event.target.value)}><option value="todos">Todos</option><option value="Ingreso">Ingresos</option><option value="Egreso">Egresos</option></select></label></div>
             </div>
             <div className="tableWrap"><table>
               <thead><tr><th>Folio</th><th>Fecha</th><th>Alumno / proveedor</th><th>Concepto</th><th>Forma / caja</th><th>Importe</th><th>Estado</th></tr></thead>
@@ -287,13 +361,25 @@ const moduleData: Record<string, { title: string; subtitle: string; action: stri
   Reportes: { title: "Reportes", subtitle: "Consultas numéricas y exportaciones del ciclo escolar", action: "Exportar", headers: ["Reporte","Periodo","Última actualización","Formato","Estado"], rows: [["Estado de cuenta por alumno","Ciclo 2025–2026","Hoy, 10:42","PDF / Excel","Disponible"],["Cobranza por grupo","Junio 2026","Hoy, 10:42","Excel","Disponible"],["Flujo de efectivo","Junio 2026","Ayer, 18:10","PDF / Excel","Disponible"],["Estado de resultados","Junio 2026","Ayer, 18:10","PDF / Excel","Disponible"]] },
 };
 
+const moduleFilters: Record<string, Array<{ label: string; column: number }>> = {
+  Alumnos: [{ label: "Salón", column: 2 }, { label: "Estado de pago", column: 5 }],
+  Cobros: [{ label: "Concepto", column: 1 }, { label: "Estado", column: 7 }],
+  Ingresos: [{ label: "Forma", column: 4 }, { label: "Conciliación", column: 6 }],
+  Egresos: [{ label: "Tipo", column: 2 }, { label: "Partida", column: 3 }],
+  Conciliación: [{ label: "Estado", column: 6 }, { label: "Alumno", column: 3 }],
+  Nómina: [{ label: "Estado", column: 6 }, { label: "Caja", column: 5 }],
+  Traspasos: [{ label: "Origen", column: 2 }, { label: "Estado", column: 6 }],
+  Becas: [{ label: "Tipo", column: 1 }, { label: "Estado", column: 6 }],
+  Presupuesto: [{ label: "Mes", column: 0 }, { label: "Cumplimiento", column: 6 }],
+};
+
 function ModuleView({ name, openForm }: { name: string; openForm: (type: string) => void }) {
   const supabase = useMemo(() => createClient(), []);
   const data = moduleData[name] ?? moduleData.Alumnos;
   const [rows, setRows] = useState<string[][]>(data.rows);
   const [query, setQuery] = useState("");
-  const [gradeFilter, setGradeFilter] = useState("todos");
-  const [statusFilter, setStatusFilter] = useState("todos");
+  const [firstFilter, setFirstFilter] = useState("todos");
+  const [secondFilter, setSecondFilter] = useState("todos");
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [studentMetrics, setStudentMetrics] = useState({ total: 0, paidRate: 0, averageCharge: 0, pending: 0 });
@@ -361,12 +447,15 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
     return () => window.removeEventListener("cei:data-changed", loadRows);
   }, [data.rows, liveModule, name, supabase]);
 
-  const gradeOptions = useMemo(() => Array.from(new Set(rows.map((row) => row[2]).filter(Boolean))).sort(), [rows]);
+  const filters = useMemo(() => moduleFilters[name] ?? [], [name]);
+  const firstOptions = useMemo(() => Array.from(new Set(rows.map((row) => row[filters[0]?.column]).filter(Boolean))).sort(), [filters, rows]);
+  const secondOptions = useMemo(() => Array.from(new Set(rows.map((row) => row[filters[1]?.column]).filter(Boolean))).sort(), [filters, rows]);
   const visibleRows = useMemo(() => rows.filter((row) => {
     const matchesQuery = row.join(" ").toLocaleLowerCase("es").includes(query.toLocaleLowerCase("es"));
-    if (name !== "Alumnos") return matchesQuery;
-    return matchesQuery && (gradeFilter === "todos" || row[2] === gradeFilter) && (statusFilter === "todos" || row[5] === statusFilter);
-  }), [gradeFilter, name, query, rows, statusFilter]);
+    return matchesQuery &&
+      (firstFilter === "todos" || row[filters[0]?.column] === firstFilter) &&
+      (secondFilter === "todos" || row[filters[1]?.column] === secondFilter);
+  }), [filters, firstFilter, query, rows, secondFilter]);
   const act = () => openForm(name === "Cobros" ? "cobro" : name === "Ingresos" ? "transferencia" : name);
   return <section className="modulePage">
     <div className="moduleHead"><div><p className="eyebrow">CICLO ACTIVO</p><h1>{data.title}</h1><p>{data.subtitle}</p></div><div className="moduleHeadActions">{name === "Alumnos" && <button className="secondary" onClick={() => openForm("importar-alumnos")}><Upload size={18}/>Importar lista</button>}<button className="primary" onClick={act}><Plus size={18}/>{data.action}</button></div></div>
@@ -376,7 +465,7 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
       <div><span>Cargo promedio</span><strong>{money.format(studentMetrics.averageCharge)}</strong></div>
       <div><span>Saldo pendiente</span><strong className="financialNegative">{money.format(studentMetrics.pending)}</strong></div>
     </div>}
-    <div className="moduleTools"><label className="search"><Search size={18}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Buscar en ${data.title.toLowerCase()}…`}/></label>{name === "Alumnos" ? <div className="studentFilters"><label><span>Salón</span><select value={gradeFilter} onChange={(event) => setGradeFilter(event.target.value)}><option value="todos">Todos</option>{gradeOptions.map((grade) => <option key={grade} value={grade}>{grade}</option>)}</select></label><label><span>Estado de pago</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="todos">Todos</option><option>Pagado</option><option>Pagó con retardo</option><option>No ha pagado</option></select></label></div> : <button className="secondary">Filtros <ChevronDown size={16}/></button>}</div>
+    <div className="moduleTools"><label className="search"><Search size={18}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Buscar en ${data.title.toLowerCase()}…`}/></label><div className="studentFilters">{filters[0] && <label><span>{filters[0].label}</span><select value={firstFilter} onChange={(event) => setFirstFilter(event.target.value)}><option value="todos">Todos</option>{firstOptions.map((option) => <option key={option}>{option}</option>)}</select></label>}{filters[1] && <label><span>{filters[1].label}</span><select value={secondFilter} onChange={(event) => setSecondFilter(event.target.value)}><option value="todos">Todos</option>{secondOptions.map((option) => <option key={option}>{option}</option>)}</select></label>}</div></div>
     <div className="panel moduleTable"><div className="tableWrap"><table><thead><tr>{data.headers.map(h=><th key={h}>{h}</th>)}</tr></thead><tbody>{visibleRows.map((row,i)=><tr key={`${row[0]}-${i}`}>{row.map((cell,j)=>{
       const isStatus = data.headers[j] === "Estado";
       const statusTone = cell === "Pagado" ? "paid" : cell === "Pagó con retardo" ? "late" : cell === "No ha pagado" ? "unpaid" : "";
