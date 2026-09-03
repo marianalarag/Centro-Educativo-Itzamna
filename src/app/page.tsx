@@ -292,8 +292,11 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
   const data = moduleData[name] ?? moduleData.Alumnos;
   const [rows, setRows] = useState<string[][]>(data.rows);
   const [query, setQuery] = useState("");
+  const [gradeFilter, setGradeFilter] = useState("todos");
+  const [statusFilter, setStatusFilter] = useState("todos");
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
+  const [studentMetrics, setStudentMetrics] = useState({ total: 0, paidRate: 0, averageCharge: 0, pending: 0 });
   const liveModule = ["Alumnos", "Cobros", "Ingresos", "Egresos"].includes(name);
 
   useEffect(() => {
@@ -312,6 +315,12 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
             .order("enrollment");
           if (error) throw error;
           const items = (statuses ?? []) as Array<PaymentStatusRow & { level: string; tutor_name: string | null; tutor_phone: string | null }>;
+          setStudentMetrics({
+            total: items.length,
+            paidRate: items.length ? Math.round(items.filter((item) => item.payment_status !== "no_pagado").length * 100 / items.length) : 0,
+            averageCharge: items.length ? items.reduce((sum, item) => sum + Number(item.net_amount ?? 0), 0) / items.length : 0,
+            pending: items.reduce((sum, item) => sum + Number(item.balance ?? 0), 0),
+          });
           setRows(name === "Alumnos"
             ? items.map((item) => [item.enrollment, `${item.first_name} ${item.last_name}`, `${item.grade} · ${item.level}`, item.tutor_name ?? "—", item.tutor_phone ?? "—", paymentStatusPresentation(item.payment_status).label])
             : items.map((item) => [`${item.first_name} ${item.last_name}`, item.concept ?? "Sin cargo", formatDate(item.due_on), money.format(Number(item.net_amount ?? 0)), money.format(Number(item.late_fee_amount ?? 0)), money.format(Number(item.paid_amount ?? 0)), money.format(Number(item.balance ?? 0)), paymentStatusPresentation(item.payment_status).label]));
@@ -352,11 +361,22 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
     return () => window.removeEventListener("cei:data-changed", loadRows);
   }, [data.rows, liveModule, name, supabase]);
 
-  const visibleRows = useMemo(() => rows.filter((row) => row.join(" ").toLocaleLowerCase("es").includes(query.toLocaleLowerCase("es"))), [query, rows]);
+  const gradeOptions = useMemo(() => Array.from(new Set(rows.map((row) => row[2]).filter(Boolean))).sort(), [rows]);
+  const visibleRows = useMemo(() => rows.filter((row) => {
+    const matchesQuery = row.join(" ").toLocaleLowerCase("es").includes(query.toLocaleLowerCase("es"));
+    if (name !== "Alumnos") return matchesQuery;
+    return matchesQuery && (gradeFilter === "todos" || row[2] === gradeFilter) && (statusFilter === "todos" || row[5] === statusFilter);
+  }), [gradeFilter, name, query, rows, statusFilter]);
   const act = () => openForm(name === "Cobros" ? "cobro" : name === "Ingresos" ? "transferencia" : name);
   return <section className="modulePage">
     <div className="moduleHead"><div><p className="eyebrow">CICLO ACTIVO</p><h1>{data.title}</h1><p>{data.subtitle}</p></div><div className="moduleHeadActions">{name === "Alumnos" && <button className="secondary" onClick={() => openForm("importar-alumnos")}><Upload size={18}/>Importar lista</button>}<button className="primary" onClick={act}><Plus size={18}/>{data.action}</button></div></div>
-    <div className="moduleTools"><label className="search"><Search size={18}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Buscar en ${data.title.toLowerCase()}…`}/></label><button className="secondary">Filtros <ChevronDown size={16}/></button></div>
+    {name === "Alumnos" && <div className="studentMetrics">
+      <div><span>Alumnos</span><strong>{studentMetrics.total}</strong></div>
+      <div><span>Con pago registrado</span><strong className="financialPositive">{studentMetrics.paidRate}%</strong></div>
+      <div><span>Cargo promedio</span><strong>{money.format(studentMetrics.averageCharge)}</strong></div>
+      <div><span>Saldo pendiente</span><strong className="financialNegative">{money.format(studentMetrics.pending)}</strong></div>
+    </div>}
+    <div className="moduleTools"><label className="search"><Search size={18}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Buscar en ${data.title.toLowerCase()}…`}/></label>{name === "Alumnos" ? <div className="studentFilters"><label><span>Salón</span><select value={gradeFilter} onChange={(event) => setGradeFilter(event.target.value)}><option value="todos">Todos</option>{gradeOptions.map((grade) => <option key={grade} value={grade}>{grade}</option>)}</select></label><label><span>Estado de pago</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="todos">Todos</option><option>Pagado</option><option>Pagó con retardo</option><option>No ha pagado</option></select></label></div> : <button className="secondary">Filtros <ChevronDown size={16}/></button>}</div>
     <div className="panel moduleTable"><div className="tableWrap"><table><thead><tr>{data.headers.map(h=><th key={h}>{h}</th>)}</tr></thead><tbody>{visibleRows.map((row,i)=><tr key={`${row[0]}-${i}`}>{row.map((cell,j)=>{
       const isStatus = data.headers[j] === "Estado";
       const statusTone = cell === "Pagado" ? "paid" : cell === "Pagó con retardo" ? "late" : cell === "No ha pagado" ? "unpaid" : "";
@@ -427,6 +447,8 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
   const [reference, setReference] = useState("");
   const [concept, setConcept] = useState("Colegiatura");
   const [description, setDescription] = useState("");
+  const [tutorName, setTutorName] = useState("");
+  const [tutorPhone, setTutorPhone] = useState("");
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -449,11 +471,18 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
         const parts = name.trim().split(/\s+/);
         const firstName = parts.shift() || name.trim();
         const lastName = parts.join(" ") || "Pendiente";
-        const { error } = await supabase.from("students").insert({
+        const { data: createdStudent, error } = await supabase.from("students").insert({
           enrollment: enrollment.trim(), first_name: firstName, last_name: lastName,
           level: "Primaria", grade: description.trim() || "Pendiente", cycle_id: cycle.id,
-        });
+        }).select("id").single();
         if (error) throw error;
+        if (tutorName.trim()) {
+          const { error: contactError } = await supabase.from("student_contacts").insert({
+            student_id: createdStudent.id, full_name: tutorName.trim(), relationship: "Familiar",
+            phone: tutorPhone.trim() || null, primary_contact: true,
+          });
+          if (contactError) throw contactError;
+        }
       } else if (payment) {
         const { data: account } = await supabase.from("accounts").select("id").eq("kind", type === "cobro" ? "efectivo" : "banco").eq("active", true).limit(1).maybeSingle();
         if (!account) throw new Error("No hay una cuenta financiera configurada.");
@@ -546,7 +575,7 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
         <label>{type === "cobro" ? "Concepto" : "Referencia bancaria"}<input required={type === "transferencia"} value={type === "cobro" ? concept : reference} onChange={(event) => type === "cobro" ? setConcept(event.target.value) : setReference(event.target.value)} placeholder={type === "cobro" ? "Colegiatura" : "Referencia del depósito"} /></label>
       </> : <><label>{type === "Alumnos" ? "Nombre completo" : "Descripción"}<input required value={name} onChange={(event) => setName(event.target.value)} placeholder="Escribe la información principal" /></label>
         <div className="formRow"><label>Fecha<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label>{type === "Alumnos" ? "Matrícula" : "Importe"}<input required={type !== "Alumnos"} type={type === "Alumnos" ? "text" : "number"} min={type === "Alumnos" ? undefined : ".01"} step={type === "Alumnos" ? undefined : ".01"} value={type === "Alumnos" ? enrollment : amount} onChange={(event) => type === "Alumnos" ? setEnrollment(event.target.value) : setAmount(event.target.value)} placeholder={type === "Alumnos" ? "CEI-0001" : "$ 0.00"} /></label></div>
-        {type === "Alumnos" && <label>Grado<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Ej. 4° Primaria" /></label>}
+        {type === "Alumnos" && <><label>Grado<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Ej. 4° Primaria" /></label><div className="formRow"><label>Familiar o tutor<input value={tutorName} onChange={(event) => setTutorName(event.target.value)} placeholder="Nombre completo" /></label><label>Teléfono de contacto<input type="tel" value={tutorPhone} onChange={(event) => setTutorPhone(event.target.value)} placeholder="999 000 0000" /></label></div></>}
       </>}
       {message && <p className="formError">{message}</p>}
       <div className="modalActions"><button type="button" className="secondary" onClick={close}>Cancelar</button><button className="primary" disabled={busy}>{busy ? "Guardando…" : "Guardar registro"}</button></div>
