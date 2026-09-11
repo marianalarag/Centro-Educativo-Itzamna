@@ -32,6 +32,7 @@ const paths: Record<string, string> = {
 
 const namesByPath = Object.fromEntries(Object.entries(paths).map(([name, path]) => [path, name]));
 type MovementRow = readonly [string, string, string, string, string, number, string];
+type FinancialMonth = { key: string; label: string; income: number; expense: number; net: number };
 type PaymentStatusRow = {
   student_id: string;
   enrollment: string;
@@ -84,6 +85,7 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
   const [dbMovements, setDbMovements] = useState<MovementRow[]>([]);
   const [paymentStatuses, setPaymentStatuses] = useState<PaymentStatusRow[]>([]);
   const [summary, setSummary] = useState({ income: 0, expense: 0, pending: 0, paid: 0, late: 0, unpaid: 0 });
+  const [financialSeries, setFinancialSeries] = useState<FinancialMonth[]>([]);
   const [userName, setUserName] = useState("Personal autorizado");
   const [userRole, setUserRole] = useState("captura");
   const displayMovements: readonly MovementRow[] = dbMovements;
@@ -181,6 +183,22 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
       setDbMovements([...incomeRows, ...expenseRows].sort((a, b) => String(b[1]).localeCompare(String(a[1]))).slice(0, 10));
       const paymentRows = (statuses ?? []) as PaymentStatusRow[];
       setPaymentStatuses(paymentRows);
+      const monthFormatter = new Intl.DateTimeFormat("es-MX", { month: "short", timeZone: "UTC" });
+      const now = new Date();
+      const months: FinancialMonth[] = Array.from({ length: 6 }, (_, index) => {
+        const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (5 - index), 1));
+        return { key: `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`, label: monthFormatter.format(date).replace(".", ""), income: 0, expense: 0, net: 0 };
+      });
+      const monthsByKey = new Map(months.map((month) => [month.key, month]));
+      for (const income of incomes ?? []) {
+        const month = monthsByKey.get(String(income.paid_on ?? "").slice(0, 7));
+        if (month) month.income += Number(income.amount);
+      }
+      for (const expense of expenses ?? []) {
+        const month = monthsByKey.get(String(expense.spent_on ?? "").slice(0, 7));
+        if (month) month.expense += Number(expense.total);
+      }
+      setFinancialSeries(months.map((month) => ({ ...month, net: month.income - month.expense })));
       setSummary({
         income: (incomes ?? []).reduce((sum, item) => sum + Number(item.amount), 0),
         expense: (expenses ?? []).reduce((sum, item) => sum + Number(item.total), 0),
@@ -290,6 +308,8 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
             <button onClick={() => go("Reportes")}>Consultar reportes →</button>
           </section>
 
+          <FinancialChart series={financialSeries} totalIncome={summary.income} totalExpense={summary.expense} />
+
           {summary.unpaid > 0 && <button className="unpaidBanner" onClick={() => go("Cobros")}>
             <span><AlertTriangle size={22} /></span>
             <div><strong>{summary.unpaid} {summary.unpaid === 1 ? "alumno tiene" : "alumnos tienen"} pagos pendientes</strong><small>Hay {money.format(summary.pending)} por cobrar. Abre Cobros para revisar los adeudos.</small></div>
@@ -346,6 +366,48 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
         : modal && <QuickForm type={modal} close={() => setModal(null)} />}
     </div>
   );
+}
+
+function FinancialChart({ series, totalIncome, totalExpense }: { series: FinancialMonth[]; totalIncome: number; totalExpense: number }) {
+  const result = totalIncome - totalExpense;
+  const maxAmount = Math.max(1, ...series.flatMap((month) => [month.income, month.expense]));
+  const width = 720;
+  const middle = 105;
+  const scale = 78 / maxAmount;
+  const points = series.map((month, index) => ({
+    ...month,
+    x: 60 + index * ((width - 100) / Math.max(series.length - 1, 1)),
+    y: middle - Math.max(-70, Math.min(70, month.net * scale)),
+  }));
+
+  return <section className="panel financialChart" aria-labelledby="financial-chart-title">
+    <div className="financialChartHead">
+      <div><p className="eyebrow">SALUD FINANCIERA</p><h2 id="financial-chart-title">Ingresos vs. egresos</h2><p>Comparativo de los últimos seis meses</p></div>
+      <div className={`financialResult ${result >= 0 ? "positive" : "negative"}`}>
+        <span>{result >= 0 ? "Resultado positivo" : "Resultado en rojo"}</span>
+        <strong>{result >= 0 ? "+" : "−"}{money.format(Math.abs(result))}</strong>
+        <small>{result >= 0 ? "Los ingresos superan los egresos" : "Los egresos superan los ingresos"}</small>
+      </div>
+    </div>
+    <div className="financialLegend" aria-hidden="true"><span className="income">Ingresos (arriba)</span><span className="expense">Egresos (abajo)</span><span className="net">Resultado mensual</span></div>
+    <div className="financialChartScroll"><svg viewBox={`0 0 ${width} 230`} role="img" aria-label="Gráfica mensual de ingresos, egresos y resultado neto">
+      <line className="chartAxis" x1="35" y1={middle} x2={width - 20} y2={middle} />
+      <text className="axisHint positive" x="38" y="18">INGRESOS</text><text className="axisHint negative" x="38" y="218">EGRESOS</text>
+      {points.map((point) => <g key={point.key}>
+        <rect className="incomeBar" x={point.x - 22} y={middle - point.income * scale} width="18" height={point.income * scale} rx="4" />
+        <rect className="expenseBar" x={point.x + 4} y={middle} width="18" height={point.expense * scale} rx="4" />
+        <text className="monthLabel" x={point.x} y="224" textAnchor="middle">{point.label}</text>
+        <title>{`${point.label}: ingresos ${money.format(point.income)}, egresos ${money.format(point.expense)}, resultado ${money.format(point.net)}`}</title>
+      </g>)}
+      {points.length > 1 && <polyline className="netLine" points={points.map((point) => `${point.x},${point.y}`).join(" ")} />}
+      {points.map((point) => <circle key={`net-${point.key}`} className={`netPoint ${point.net >= 0 ? "positive" : "negative"}`} cx={point.x} cy={point.y} r="4"><title>{`Resultado ${point.label}: ${money.format(point.net)}`}</title></circle>)}
+    </svg></div>
+    <div className="financialTotals">
+      <div><span>Ingresos</span><strong className="financialPositive">{money.format(totalIncome)}</strong></div>
+      <div><span>Egresos</span><strong className="financialNegative">{money.format(totalExpense)}</strong></div>
+      <div><span>Resultado</span><strong className={result >= 0 ? "financialPositive" : "financialNegative"}>{money.format(result)}</strong></div>
+    </div>
+  </section>;
 }
 
 const moduleData: Record<string, { title: string; subtitle: string; action: string; headers: string[]; rows: string[][] }> = {
