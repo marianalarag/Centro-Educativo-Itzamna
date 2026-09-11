@@ -392,7 +392,7 @@ function FinancialChart({ series, totalIncome, totalExpense }: { series: Financi
     <div className="financialLegend" aria-hidden="true"><span className="income">Ingresos (arriba)</span><span className="expense">Egresos (abajo)</span><span className="net">Resultado mensual</span></div>
     <div className="financialChartScroll"><svg viewBox={`0 0 ${width} 230`} role="img" aria-label="Gráfica mensual de ingresos, egresos y resultado neto">
       <line className="chartAxis" x1="35" y1={middle} x2={width - 20} y2={middle} />
-      <text className="axisHint positive" x="38" y="18">INGRESOS</text><text className="axisHint negative" x="38" y="218">EGRESOS</text>
+      <text className="axisHint positive" x="38" y="18">INGRESOS</text><text className="axisHint negative" x="38" y={middle + 17}>EGRESOS</text>
       {points.map((point) => <g key={point.key}>
         <rect className="incomeBar" x={point.x - 22} y={middle - point.income * scale} width="18" height={point.income * scale} rx="4" />
         <rect className="expenseBar" x={point.x + 4} y={middle} width="18" height={point.expense * scale} rx="4" />
