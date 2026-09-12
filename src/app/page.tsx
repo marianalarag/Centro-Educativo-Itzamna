@@ -33,6 +33,7 @@ const paths: Record<string, string> = {
 const namesByPath = Object.fromEntries(Object.entries(paths).map(([name, path]) => [path, name]));
 type MovementRow = readonly [string, string, string, string, string, number, string];
 type FinancialMonth = { key: string; label: string; income: number; expense: number; net: number };
+type FinancialEntry = { date: string; amount: number; type: "income" | "expense" };
 type PaymentStatusRow = {
   student_id: string;
   enrollment: string;
@@ -85,7 +86,7 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
   const [dbMovements, setDbMovements] = useState<MovementRow[]>([]);
   const [paymentStatuses, setPaymentStatuses] = useState<PaymentStatusRow[]>([]);
   const [summary, setSummary] = useState({ income: 0, expense: 0, pending: 0, paid: 0, late: 0, unpaid: 0 });
-  const [financialSeries, setFinancialSeries] = useState<FinancialMonth[]>([]);
+  const [financialEntries, setFinancialEntries] = useState<FinancialEntry[]>([]);
   const [userName, setUserName] = useState("Personal autorizado");
   const [userRole, setUserRole] = useState("captura");
   const displayMovements: readonly MovementRow[] = dbMovements;
@@ -183,22 +184,10 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
       setDbMovements([...incomeRows, ...expenseRows].sort((a, b) => String(b[1]).localeCompare(String(a[1]))).slice(0, 10));
       const paymentRows = (statuses ?? []) as PaymentStatusRow[];
       setPaymentStatuses(paymentRows);
-      const monthFormatter = new Intl.DateTimeFormat("es-MX", { month: "short", timeZone: "UTC" });
-      const now = new Date();
-      const months: FinancialMonth[] = Array.from({ length: 6 }, (_, index) => {
-        const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (5 - index), 1));
-        return { key: `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`, label: monthFormatter.format(date).replace(".", ""), income: 0, expense: 0, net: 0 };
-      });
-      const monthsByKey = new Map(months.map((month) => [month.key, month]));
-      for (const income of incomes ?? []) {
-        const month = monthsByKey.get(String(income.paid_on ?? "").slice(0, 7));
-        if (month) month.income += Number(income.amount);
-      }
-      for (const expense of expenses ?? []) {
-        const month = monthsByKey.get(String(expense.spent_on ?? "").slice(0, 7));
-        if (month) month.expense += Number(expense.total);
-      }
-      setFinancialSeries(months.map((month) => ({ ...month, net: month.income - month.expense })));
+      setFinancialEntries([
+        ...(incomes ?? []).map((income) => ({ date: String(income.paid_on ?? ""), amount: Number(income.amount), type: "income" as const })),
+        ...(expenses ?? []).map((expense) => ({ date: String(expense.spent_on ?? ""), amount: Number(expense.total), type: "expense" as const })),
+      ]);
       setSummary({
         income: (incomes ?? []).reduce((sum, item) => sum + Number(item.amount), 0),
         expense: (expenses ?? []).reduce((sum, item) => sum + Number(item.total), 0),
@@ -308,7 +297,7 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
             <button onClick={() => go("Reportes")}>Consultar reportes →</button>
           </section>
 
-          <FinancialChart series={financialSeries} totalIncome={summary.income} totalExpense={summary.expense} />
+          <FinancialChart entries={financialEntries} />
 
           {summary.unpaid > 0 && <button className="unpaidBanner" onClick={() => go("Cobros")}>
             <span><AlertTriangle size={22} /></span>
@@ -368,11 +357,45 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
   );
 }
 
-function FinancialChart({ series, totalIncome, totalExpense }: { series: FinancialMonth[]; totalIncome: number; totalExpense: number }) {
+function FinancialChart({ entries }: { entries: FinancialEntry[] }) {
+  const today = new Date();
+  const isoDate = (date: Date) => date.toISOString().slice(0, 10);
+  const [period, setPeriod] = useState("6m");
+  const [from, setFrom] = useState(() => isoDate(new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 5, 1))));
+  const [to, setTo] = useState(() => isoDate(today));
+  const [groupBy, setGroupBy] = useState<"month" | "year">("month");
+  const [visibleSeries, setVisibleSeries] = useState({ income: true, expense: true, net: true });
+  const monthFormatter = useMemo(() => new Intl.DateTimeFormat("es-MX", { month: "short", year: "2-digit", timeZone: "UTC" }), []);
+
+  const series = useMemo(() => {
+    if (!from || !to || from > to) return [];
+    const buckets: FinancialMonth[] = [];
+    const start = new Date(`${from}T00:00:00Z`);
+    const end = new Date(`${to}T00:00:00Z`);
+    if (groupBy === "year") {
+      for (let year = start.getUTCFullYear(); year <= end.getUTCFullYear(); year++) buckets.push({ key: String(year), label: String(year), income: 0, expense: 0, net: 0 });
+    } else {
+      const cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1));
+      while (cursor <= end) {
+        buckets.push({ key: cursor.toISOString().slice(0, 7), label: monthFormatter.format(cursor).replace(".", ""), income: 0, expense: 0, net: 0 });
+        cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+      }
+    }
+    const byKey = new Map(buckets.map((bucket) => [bucket.key, bucket]));
+    for (const entry of entries) {
+      if (!entry.date || entry.date < from || entry.date > to) continue;
+      const bucket = byKey.get(groupBy === "year" ? entry.date.slice(0, 4) : entry.date.slice(0, 7));
+      if (bucket) bucket[entry.type] += entry.amount;
+    }
+    return buckets.map((bucket) => ({ ...bucket, net: bucket.income - bucket.expense }));
+  }, [entries, from, groupBy, monthFormatter, to]);
+
+  const totalIncome = series.reduce((sum, item) => sum + item.income, 0);
+  const totalExpense = series.reduce((sum, item) => sum + item.expense, 0);
   const result = totalIncome - totalExpense;
   const maxAmount = Math.max(1, ...series.flatMap((month) => [month.income, month.expense]));
   const compactMoney = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN", notation: "compact", maximumFractionDigits: 1 });
-  const width = 760;
+  const width = Math.max(760, series.length * 96 + 90);
   const middle = 92;
   const scale = 62 / maxAmount;
   const points = series.map((month, index) => ({
@@ -380,6 +403,23 @@ function FinancialChart({ series, totalIncome, totalExpense }: { series: Financi
     x: 88 + index * ((width - 132) / Math.max(series.length - 1, 1)),
     y: middle - Math.max(-57, Math.min(57, month.net * scale)),
   }));
+
+  function applyPeriod(value: string) {
+    setPeriod(value);
+    const now = new Date();
+    if (value === "6m") {
+      setFrom(isoDate(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5, 1))));
+      setTo(isoDate(now));
+    } else if (value === "year") {
+      setFrom(`${now.getUTCFullYear()}-01-01`); setTo(`${now.getUTCFullYear()}-12-31`);
+    } else if (value === "previous") {
+      setFrom(`${now.getUTCFullYear() - 1}-01-01`); setTo(`${now.getUTCFullYear() - 1}-12-31`);
+    }
+  }
+
+  function toggleSeries(key: keyof typeof visibleSeries) {
+    setVisibleSeries((current) => ({ ...current, [key]: !current[key] }));
+  }
 
   return <section className="panel financialChart" aria-labelledby="financial-chart-title">
     <div className="financialChartHead">
@@ -390,7 +430,19 @@ function FinancialChart({ series, totalIncome, totalExpense }: { series: Financi
         <small>{result >= 0 ? "Los ingresos superan los egresos" : "Los egresos superan los ingresos"}</small>
       </div>
     </div>
-    <div className="financialLegend" aria-hidden="true"><span className="income">Ingresos</span><span className="expense">Egresos</span><span className="net">Resultado mensual</span></div>
+    <div className="financialFilters" aria-label="Filtros de la gráfica">
+      <label><span>Periodo</span><select value={period} onChange={(event) => applyPeriod(event.target.value)}><option value="6m">Últimos 6 meses</option><option value="year">Año actual</option><option value="previous">Año anterior</option><option value="custom">Personalizado</option></select></label>
+      <label><span>Desde</span><input type="date" value={from} max={to} onChange={(event) => { setFrom(event.target.value); setPeriod("custom"); }} /></label>
+      <label><span>Hasta</span><input type="date" value={to} min={from} onChange={(event) => { setTo(event.target.value); setPeriod("custom"); }} /></label>
+      <label><span>Agrupar por</span><select value={groupBy} onChange={(event) => setGroupBy(event.target.value as "month" | "year")}><option value="month">Mes</option><option value="year">Año</option></select></label>
+    </div>
+    <div className="seriesControls" aria-label="Elementos visibles">
+      <span>Mostrar:</span>
+      <button type="button" className={visibleSeries.income ? "active income" : ""} aria-pressed={visibleSeries.income} onClick={() => toggleSeries("income")}>Ingresos</button>
+      <button type="button" className={visibleSeries.expense ? "active expense" : ""} aria-pressed={visibleSeries.expense} onClick={() => toggleSeries("expense")}>Egresos</button>
+      <button type="button" className={visibleSeries.net ? "active net" : ""} aria-pressed={visibleSeries.net} onClick={() => toggleSeries("net")}>Resultado</button>
+    </div>
+    <div className="financialLegend" aria-hidden="true"><span className={visibleSeries.income ? "income" : "income hidden"}>Ingresos</span><span className={visibleSeries.expense ? "expense" : "expense hidden"}>Egresos</span><span className={visibleSeries.net ? "net" : "net hidden"}>Resultado mensual</span></div>
     <div className="financialChartScroll"><svg viewBox={`0 0 ${width} 190`} role="img" aria-label="Gráfica mensual de ingresos, egresos y resultado neto">
       <rect className="incomeZone" x="54" y="18" width={width - 72} height={middle - 18} rx="7" />
       <rect className="expenseZone" x="54" y={middle} width={width - 72} height="67" rx="7" />
@@ -399,16 +451,16 @@ function FinancialChart({ series, totalIncome, totalExpense }: { series: Financi
       <line className="chartAxis" x1="54" y1={middle} x2={width - 18} y2={middle} />
       <text className="axisHint positive" x="8" y="50">ENTRADAS</text><text className="axisHint negative" x="8" y="126">SALIDAS</text>
       {points.map((point) => <g key={point.key}>
-        <rect className="incomeBar" x={point.x - 25} y={middle - point.income * scale} width="21" height={point.income * scale} rx="4" />
-        <rect className="expenseBar" x={point.x + 4} y={middle} width="21" height={point.expense * scale} rx="4" />
-        {point.income > 0 && <text className="barValue incomeValue" x={point.x - 14.5} y={middle - point.income * scale - 6} textAnchor="middle">{compactMoney.format(point.income)}</text>}
-        {point.expense > 0 && <text className="barValue expenseValue" x={point.x + 14.5} y={Math.min(151, middle + point.expense * scale + 11)} textAnchor="middle">{compactMoney.format(point.expense)}</text>}
+        {visibleSeries.income && <rect className="incomeBar" x={point.x - 25} y={middle - point.income * scale} width="21" height={point.income * scale} rx="4" />}
+        {visibleSeries.expense && <rect className="expenseBar" x={point.x + 4} y={middle} width="21" height={point.expense * scale} rx="4" />}
+        {visibleSeries.income && point.income > 0 && <text className="barValue incomeValue" x={point.x - 14.5} y={middle - point.income * scale - 6} textAnchor="middle">{compactMoney.format(point.income)}</text>}
+        {visibleSeries.expense && point.expense > 0 && <text className="barValue expenseValue" x={point.x + 14.5} y={Math.min(151, middle + point.expense * scale + 11)} textAnchor="middle">{compactMoney.format(point.expense)}</text>}
         <line className="monthTick" x1={point.x} y1="160" x2={point.x} y2="164" />
         <text className="monthLabel" x={point.x} y="180" textAnchor="middle">{point.label}</text>
         <title>{`${point.label}: ingresos ${money.format(point.income)}, egresos ${money.format(point.expense)}, resultado ${money.format(point.net)}`}</title>
       </g>)}
-      {points.length > 1 && <polyline className="netLine" points={points.map((point) => `${point.x},${point.y}`).join(" ")} />}
-      {points.map((point) => <circle key={`net-${point.key}`} className={`netPoint ${point.net >= 0 ? "positive" : "negative"}`} cx={point.x} cy={point.y} r="4"><title>{`Resultado ${point.label}: ${money.format(point.net)}`}</title></circle>)}
+      {visibleSeries.net && points.length > 1 && <polyline className="netLine" points={points.map((point) => `${point.x},${point.y}`).join(" ")} />}
+      {visibleSeries.net && points.map((point) => <circle key={`net-${point.key}`} className={`netPoint ${point.net >= 0 ? "positive" : "negative"}`} cx={point.x} cy={point.y} r="4"><title>{`Resultado ${point.label}: ${money.format(point.net)}`}</title></circle>)}
     </svg></div>
     <div className="financialTotals">
       <div><span>Ingresos</span><strong className="financialPositive">{money.format(totalIncome)}</strong></div>
