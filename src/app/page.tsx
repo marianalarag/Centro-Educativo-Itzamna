@@ -371,13 +371,14 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
 function FinancialChart({ series, totalIncome, totalExpense }: { series: FinancialMonth[]; totalIncome: number; totalExpense: number }) {
   const result = totalIncome - totalExpense;
   const maxAmount = Math.max(1, ...series.flatMap((month) => [month.income, month.expense]));
-  const width = 720;
-  const middle = 105;
-  const scale = 78 / maxAmount;
+  const compactMoney = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN", notation: "compact", maximumFractionDigits: 1 });
+  const width = 760;
+  const middle = 92;
+  const scale = 62 / maxAmount;
   const points = series.map((month, index) => ({
     ...month,
-    x: 60 + index * ((width - 100) / Math.max(series.length - 1, 1)),
-    y: middle - Math.max(-70, Math.min(70, month.net * scale)),
+    x: 88 + index * ((width - 132) / Math.max(series.length - 1, 1)),
+    y: middle - Math.max(-57, Math.min(57, month.net * scale)),
   }));
 
   return <section className="panel financialChart" aria-labelledby="financial-chart-title">
@@ -389,14 +390,21 @@ function FinancialChart({ series, totalIncome, totalExpense }: { series: Financi
         <small>{result >= 0 ? "Los ingresos superan los egresos" : "Los egresos superan los ingresos"}</small>
       </div>
     </div>
-    <div className="financialLegend" aria-hidden="true"><span className="income">Ingresos (arriba)</span><span className="expense">Egresos (abajo)</span><span className="net">Resultado mensual</span></div>
-    <div className="financialChartScroll"><svg viewBox={`0 0 ${width} 230`} role="img" aria-label="Gráfica mensual de ingresos, egresos y resultado neto">
-      <line className="chartAxis" x1="35" y1={middle} x2={width - 20} y2={middle} />
-      <text className="axisHint positive" x="38" y="18">INGRESOS</text><text className="axisHint negative" x="38" y={middle + 17}>EGRESOS</text>
+    <div className="financialLegend" aria-hidden="true"><span className="income">Ingresos</span><span className="expense">Egresos</span><span className="net">Resultado mensual</span></div>
+    <div className="financialChartScroll"><svg viewBox={`0 0 ${width} 190`} role="img" aria-label="Gráfica mensual de ingresos, egresos y resultado neto">
+      <rect className="incomeZone" x="54" y="18" width={width - 72} height={middle - 18} rx="7" />
+      <rect className="expenseZone" x="54" y={middle} width={width - 72} height="67" rx="7" />
+      <line className="chartGuide" x1="54" y1="55" x2={width - 18} y2="55" />
+      <line className="chartGuide" x1="54" y1="126" x2={width - 18} y2="126" />
+      <line className="chartAxis" x1="54" y1={middle} x2={width - 18} y2={middle} />
+      <text className="axisHint positive" x="8" y="50">ENTRADAS</text><text className="axisHint negative" x="8" y="126">SALIDAS</text>
       {points.map((point) => <g key={point.key}>
-        <rect className="incomeBar" x={point.x - 22} y={middle - point.income * scale} width="18" height={point.income * scale} rx="4" />
-        <rect className="expenseBar" x={point.x + 4} y={middle} width="18" height={point.expense * scale} rx="4" />
-        <text className="monthLabel" x={point.x} y="224" textAnchor="middle">{point.label}</text>
+        <rect className="incomeBar" x={point.x - 25} y={middle - point.income * scale} width="21" height={point.income * scale} rx="4" />
+        <rect className="expenseBar" x={point.x + 4} y={middle} width="21" height={point.expense * scale} rx="4" />
+        {point.income > 0 && <text className="barValue incomeValue" x={point.x - 14.5} y={middle - point.income * scale - 6} textAnchor="middle">{compactMoney.format(point.income)}</text>}
+        {point.expense > 0 && <text className="barValue expenseValue" x={point.x + 14.5} y={Math.min(151, middle + point.expense * scale + 11)} textAnchor="middle">{compactMoney.format(point.expense)}</text>}
+        <line className="monthTick" x1={point.x} y1="160" x2={point.x} y2="164" />
+        <text className="monthLabel" x={point.x} y="180" textAnchor="middle">{point.label}</text>
         <title>{`${point.label}: ingresos ${money.format(point.income)}, egresos ${money.format(point.expense)}, resultado ${money.format(point.net)}`}</title>
       </g>)}
       {points.length > 1 && <polyline className="netLine" points={points.map((point) => `${point.x},${point.y}`).join(" ")} />}
