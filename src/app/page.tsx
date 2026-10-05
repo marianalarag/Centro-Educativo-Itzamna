@@ -81,6 +81,11 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
   const [menu, setMenu] = useState(false);
   const [modal, setModal] = useState<string | null>(null);
   const [notificationOpen, setNotificationOpen] = useState(false);
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [passwordConfirmation, setPasswordConfirmation] = useState("");
+  const [passwordMessage, setPasswordMessage] = useState("");
+  const [passwordBusy, setPasswordBusy] = useState(false);
   const [readNotifications, setReadNotifications] = useState<string[]>([]);
   const [authChecking, setAuthChecking] = useState(true);
   const [dbMovements, setDbMovements] = useState<MovementRow[]>([]);
@@ -223,6 +228,36 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
     router.replace("/login");
   }
 
+  function openPasswordModal() {
+    setPasswordMessage("");
+    setNewPassword("");
+    setPasswordConfirmation("");
+    setPasswordModalOpen(true);
+  }
+
+  async function changePassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPasswordMessage("");
+    if (newPassword.length < 8) {
+      setPasswordMessage("La contraseña debe tener al menos 8 caracteres.");
+      return;
+    }
+    if (newPassword !== passwordConfirmation) {
+      setPasswordMessage("Las contraseñas no coinciden.");
+      return;
+    }
+    setPasswordBusy(true);
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      setPasswordMessage(error.message);
+    } else {
+      setPasswordModalOpen(false);
+      setNewPassword("");
+      setPasswordConfirmation("");
+    }
+    setPasswordBusy(false);
+  }
+
   function markNotificationsRead(ids = notifications.map((item) => item.id)) {
     const next = Array.from(new Set([...readNotifications, ...ids]));
     setReadNotifications(next);
@@ -255,7 +290,7 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
             </button>
           ))}
         </nav>
-        <div className="sessionActions"><span>{userName}</span><button className="logoutButton" onClick={signOut} aria-label="Cerrar sesión" title="Cerrar sesión"><LogOut size={16} /> Cerrar sesión</button></div>
+        <div className="sessionActions"><span>{userName}</span><div className="sessionButtons"><button className="passwordButton" onClick={openPasswordModal}>Cambiar contraseña</button><button className="logoutButton" onClick={signOut} aria-label="Cerrar sesión" title="Cerrar sesión"><LogOut size={16} /> Cerrar sesión</button></div></div>
         <div className="user"><div className="avatar">{initials(userName)}</div><div><strong>{userName}</strong><span>{roleLabel(userRole)}</span></div><ChevronDown size={16} /></div>
       </aside>
       {menu && <button className="scrim" onClick={() => setMenu(false)} />}
@@ -353,6 +388,17 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
         : modal === "cobro"
           ? <ChargeModal close={() => setModal(null)} />
         : modal && <QuickForm type={modal} close={() => setModal(null)} />}
+      {passwordModalOpen && <div className="modalLayer" role="dialog" aria-modal="true" aria-labelledby="password-modal-title">
+        <button className="backdrop" onClick={() => setPasswordModalOpen(false)} aria-label="Cerrar" />
+        <form className="modal passwordModal" onSubmit={changePassword}>
+          <div className="modalHead"><div><p className="eyebrow">SEGURIDAD</p><h2 id="password-modal-title">Cambiar contraseña</h2></div><button type="button" className="iconButton" onClick={() => setPasswordModalOpen(false)}><X size={20} /></button></div>
+          <p className="formNote">Elige una contraseña nueva de al menos 8 caracteres.</p>
+          <label>Nueva contraseña<input required minLength={8} type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label>
+          <label>Confirmar contraseña<input required minLength={8} type="password" autoComplete="new-password" value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} /></label>
+          {passwordMessage && <p className="formError">{passwordMessage}</p>}
+          <div className="modalActions"><button type="button" className="secondary" onClick={() => setPasswordModalOpen(false)}>Cancelar</button><button className="primary" disabled={passwordBusy}>{passwordBusy ? "Actualizando…" : "Actualizar contraseña"}</button></div>
+        </form>
+      </div>}
     </div>
   );
 }
