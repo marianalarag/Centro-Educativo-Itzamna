@@ -290,7 +290,7 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
             </button>
           ))}
         </nav>
-        <div className="sessionActions"><span>{userName}</span><div className="sessionButtons"><button className="passwordButton" onClick={openPasswordModal}>Cambiar contraseña</button><button className="logoutButton" onClick={signOut} aria-label="Cerrar sesión" title="Cerrar sesión"><LogOut size={16} /> Cerrar sesión</button></div></div>
+        <div className="sessionActions"><div className="sessionButtons"><button className="passwordButton" onClick={openPasswordModal}>Cambiar contraseña</button><button className="logoutButton" onClick={signOut} aria-label="Cerrar sesión" title="Cerrar sesión"><LogOut size={16} /> Cerrar sesión</button></div></div>
         <div className="user"><div className="avatar">{initials(userName)}</div><div><strong>{userName}</strong><span>{roleLabel(userRole)}</span></div><ChevronDown size={16} /></div>
       </aside>
       {menu && <button className="scrim" onClick={() => setMenu(false)} />}
