@@ -632,6 +632,51 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
           });
           setRows(nextRows);
           setRowActions(Object.fromEntries(nextRows.map((row, index) => [row.join("\u001f"), { kind: "bank" as const, id: movements?.[index].id }] )));
+        } else if (name === "Nómina") {
+          const [{ data: periods, error }, { data: accounts }, { data: items }] = await Promise.all([
+            supabase.from("payroll_periods").select("id,starts_on,ends_on,account_id,status").order("starts_on", { ascending: false }).limit(100),
+            supabase.from("accounts").select("id,name"),
+            supabase.from("payroll_items").select("payroll_period_id,earnings,loan_deduction,other_deductions"),
+          ]);
+          if (error) throw error;
+          const accountMap = new Map((accounts ?? []).map((account) => [account.id, account.name]));
+          const itemsByPeriod = new Map<string, typeof items>();
+          (items ?? []).forEach((item) => itemsByPeriod.set(item.payroll_period_id, [...(itemsByPeriod.get(item.payroll_period_id) ?? []), item]));
+          const nextRows = (periods ?? []).map((period) => {
+            const periodItems = itemsByPeriod.get(period.id) ?? [];
+            const earnings = periodItems.reduce((sum, item) => sum + Number(item.earnings), 0);
+            const deductions = periodItems.reduce((sum, item) => sum + Number(item.loan_deduction) + Number(item.other_deductions), 0);
+            return [`${formatDate(period.starts_on)} – ${formatDate(period.ends_on)}`, String(periodItems.length), money.format(earnings), money.format(deductions), money.format(earnings - deductions), accountMap.get(period.account_id ?? "") ?? "—", String(period.status)];
+          });
+          setRows(nextRows);
+          setRowActions({});
+        } else if (name === "Becas") {
+          const [{ data: scholarships, error }, { data: students }, { data: concepts }] = await Promise.all([
+            supabase.from("scholarships").select("id,student_id,concept_id,kind,percentage,starts_on,ends_on,active").order("starts_on", { ascending: false }).limit(100),
+            supabase.from("students").select("id,first_name,last_name"),
+            supabase.from("payment_concepts").select("id,name"),
+          ]);
+          if (error) throw error;
+          const studentMap = new Map((students ?? []).map((student) => [student.id, `${student.first_name} ${student.last_name}`]));
+          const conceptMap = new Map((concepts ?? []).map((concept) => [concept.id, concept.name]));
+          const nextRows = (scholarships ?? []).map((scholarship) => [
+            studentMap.get(scholarship.student_id) ?? "Alumno no encontrado", String(scholarship.kind), `${Number(scholarship.percentage)}%`,
+            conceptMap.get(scholarship.concept_id ?? "") ?? "Todos los conceptos", `${formatDate(scholarship.starts_on)} – ${formatDate(scholarship.ends_on)}`,
+            money.format(Number(scholarship.percentage) / 100), scholarship.active ? "Activa" : "Inactiva",
+          ]);
+          setRows(nextRows);
+          setRowActions({});
+        } else if (name === "Presupuesto") {
+          const { data: budgetRows, error } = await supabase.from("budget_vs_actual").select("budget_id,number,month_name,budget_income,actual_income,budget_expense,actual_expense").order("number").limit(200);
+          if (error) throw error;
+          const nextRows = (budgetRows ?? []).map((budget) => [
+            budget.month_name, money.format(Number(budget.budget_income)), money.format(Number(budget.actual_income)),
+            money.format(Number(budget.budget_expense)), money.format(Number(budget.actual_expense)),
+            money.format(Number(budget.actual_income) - Number(budget.actual_expense)),
+            Number(budget.budget_income) > 0 ? `${Math.round(Number(budget.actual_income) * 100 / Number(budget.budget_income))}%` : "—",
+          ]);
+          setRows(nextRows);
+          setRowActions({});
         } else if (name === "Egresos") {
           const [{ data: expenses, error }, { data: categories }, { data: accounts }] = await Promise.all([
             supabase.from("expenses").select("id,spent_on,category_id,account_id,supplier,description,total,status").eq("status", "confirmado").order("spent_on", { ascending: false }).limit(100),
@@ -687,7 +732,7 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
   const hasActions = Object.keys(rowActions).length > 0;
   const act = () => openForm(name === "Cobros" ? "cobro" : name === "Ingresos" ? "transferencia" : name);
   return <section className="modulePage">
-    <div className="moduleHead"><div><p className="eyebrow">CICLO ACTIVO</p><h1>{data.title}</h1><p>{data.subtitle}</p></div><div className="moduleHeadActions">{name === "Alumnos" && <button className="secondary" onClick={() => openForm("importar-alumnos")}><Upload size={18}/>Importar lista</button>}{operationalModule && <button className="primary" onClick={act}><Plus size={18}/>{data.action}</button>}</div></div>
+    <div className="moduleHead"><div><p className="eyebrow">CICLO ACTIVO</p><h1>{data.title}</h1><p>{data.subtitle}</p></div><div className="moduleHeadActions">{name === "Alumnos" && <button className="secondary" onClick={() => openForm("importar-alumnos")}><Upload size={18}/>Importar lista</button>}{operationalModule && ["Alumnos", "Cobros", "Ingresos", "Conciliación", "Egresos", "Traspasos"].includes(name) && <button className="primary" onClick={act}><Plus size={18}/>{data.action}</button>}</div></div>
     {name === "Alumnos" && <div className="studentMetrics">
       <div><span>Alumnos</span><strong>{studentMetrics.total}</strong></div>
       <div><span>Con pago registrado</span><strong className="financialPositive">{studentMetrics.paidRate}%</strong></div>
