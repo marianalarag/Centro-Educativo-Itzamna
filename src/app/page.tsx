@@ -744,7 +744,7 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
       const isStatus = data.headers[j] === "Estado";
       const statusTone = cell === "Pagado" ? "paid" : cell === "Pagó con retardo" ? "late" : cell === "No ha pagado" ? "unpaid" : "";
       return <td data-label={data.headers[j]} className={[j===1?"person":"", getFinancialTone(name, data.headers[j], cell, row)].filter(Boolean).join(" ")} key={j}>{isStatus && statusTone ? <span className={`paymentBadge ${statusTone}`}>{cell}</span> : cell}</td>;
-    })}{action && <td data-label="Acciones"><div className="tableActions"><button type="button" className="tableAction iconAction" title="Editar" aria-label="Editar" onClick={() => openForm(`correction:${action.kind}:${action.id}:edit`)}><Pencil size={14}/></button>{action.kind !== "bank" || row[6] !== "duplicado" ? <button type="button" className="tableAction dangerAction iconAction" title={action.kind === "student" ? "Dar de baja" : action.kind === "bank" ? "Marcar duplicado" : "Cancelar"} aria-label={action.kind === "student" ? "Dar de baja" : action.kind === "bank" ? "Marcar duplicado" : "Cancelar"} onClick={() => openForm(`correction:${action.kind}:${action.id}:${action.kind === "student" ? "deactivate" : action.kind === "bank" ? "duplicate" : "cancel"}`)}><Trash2 size={14}/></button> : null}</div></td>}</tr>})}</tbody></table>{loading && <div className="empty">Cargando registros…</div>}{!loading && !visibleRows.length && !loadError && <div className="empty">No hay registros para mostrar.</div>}{loadError && <div className="empty errorText">{loadError}</div>}</div><div className="panelFooter"><span>{visibleRows.length} registros disponibles</span></div></div>
+    })}{action && <td data-label="Acciones"><div className="tableActions"><button type="button" className="tableAction iconAction" title="Editar" aria-label="Editar" onClick={() => openForm(`correction:${action.kind}:${action.id}:edit`)}><Pencil size={14}/></button>{action.kind === "bank" && row[6] !== "duplicado" && <button type="button" className="tableAction iconAction" title="Conciliar" aria-label="Conciliar" onClick={() => openForm(`correction:${action.kind}:${action.id}:reconcile`)}><CheckCircle2 size={14}/></button>}{action.kind !== "bank" || row[6] !== "duplicado" ? <button type="button" className="tableAction dangerAction iconAction" title={action.kind === "student" ? "Dar de baja" : action.kind === "bank" ? "Marcar duplicado" : "Cancelar"} aria-label={action.kind === "student" ? "Dar de baja" : action.kind === "bank" ? "Marcar duplicado" : "Cancelar"} onClick={() => openForm(`correction:${action.kind}:${action.id}:${action.kind === "student" ? "deactivate" : action.kind === "bank" ? "duplicate" : "cancel"}`)}><Trash2 size={14}/></button> : null}</div></td>}</tr>})}</tbody></table>{loading && <div className="empty">Cargando registros…</div>}{!loading && !visibleRows.length && !loadError && <div className="empty">No hay registros para mostrar.</div>}{loadError && <div className="empty errorText">{loadError}</div>}</div><div className="panelFooter"><span>{visibleRows.length} registros disponibles</span></div></div>
   </section>;
 }
 
@@ -819,6 +819,12 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
   const [tutorName, setTutorName] = useState("");
   const [tutorPhone, setTutorPhone] = useState("");
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
+  const [studentId, setStudentId] = useState("");
+  const [students, setStudents] = useState<Array<{ id: string; enrollment: string; first_name: string; last_name: string }>>([]);
+  const [percentage, setPercentage] = useState("50");
+  const [scholarshipKind, setScholarshipKind] = useState("interna");
+  const [conceptId, setConceptId] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -838,6 +844,25 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
       setCategoryId(nextCategories[0]?.id ?? "");
     }
     loadCatalogs();
+  }, [supabase, type]);
+
+  useEffect(() => {
+    if (type !== "Nómina" && type !== "Becas") return;
+    async function loadAdministrativeCatalogs() {
+      const [{ data: accountRows }, { data: studentRows }, { data: conceptRows }] = await Promise.all([
+        supabase.from("accounts").select("id,name").eq("active", true).order("name"),
+        type === "Becas" ? supabase.from("students").select("id,enrollment,first_name,last_name").eq("active", true).order("enrollment") : Promise.resolve({ data: [] as Array<{ id: string; enrollment: string; first_name: string; last_name: string }> }),
+        type === "Becas" ? supabase.from("payment_concepts").select("id,name").eq("active", true).order("name") : Promise.resolve({ data: [] as Array<{ id: string; name: string }> }),
+      ]);
+      const nextAccounts = (accountRows ?? []) as Array<{ id: string; name: string }>;
+      setAccounts(nextAccounts);
+      setAccountId(nextAccounts[0]?.id ?? "");
+      setStudents((studentRows ?? []) as Array<{ id: string; enrollment: string; first_name: string; last_name: string }>);
+      const nextConcepts = (conceptRows ?? []).map((concept) => ({ id: concept.id, name: concept.name, type: "concepto" }));
+      setCategories(nextConcepts);
+      setConceptId(nextConcepts[0]?.id ?? "");
+    }
+    loadAdministrativeCatalogs();
   }, [supabase, type]);
 
   async function save(event: FormEvent<HTMLFormElement>) {
@@ -924,6 +949,27 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
         window.dispatchEvent(new Event("cei:data-changed"));
         close();
         return;
+      } else if (type === "Nómina") {
+        if (!date || !endDate || endDate < date) throw new Error("El periodo de nómina no es válido.");
+        const { error } = await supabase.from("payroll_periods").insert({
+          starts_on: date, ends_on: endDate, account_id: accountId || null, status: "borrador", created_by: user.id,
+        });
+        if (error) throw error;
+      } else if (type === "Becas") {
+        if (!studentId) throw new Error("Selecciona un alumno para asignar la beca.");
+        if (!date || !endDate || endDate < date) throw new Error("La vigencia de la beca no es válida.");
+        const { error } = await supabase.from("scholarships").insert({
+          student_id: studentId, concept_id: conceptId || null, kind: scholarshipKind,
+          percentage: Number(percentage), starts_on: date, ends_on: endDate, active: true,
+        });
+        if (error) throw error;
+      } else if (type === "Presupuesto") {
+        const { data: cycle } = await supabase.from("school_cycles").select("id").eq("active", true).single();
+        if (!cycle || !name.trim()) throw new Error("Indica el nombre del presupuesto y verifica que haya un ciclo activo.");
+        const { error } = await supabase.from("budgets").insert({
+          cycle_id: cycle.id, name: name.trim(), status: "borrador", created_by: user.id,
+        });
+        if (error) throw error;
       } else if (type === "Egresos") {
         if (!accountId || !categoryId) throw new Error("Selecciona la cuenta y la partida del egreso.");
         const { error } = await supabase.from("expenses").insert({
@@ -965,7 +1011,10 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
       {payment ? <><label>Alumno<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Nombre o matrícula" /></label>
         <div className="formRow"><label>Fecha<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label>Monto<input required type="number" min=".01" step=".01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="$ 0.00" /></label></div>
         <label>{type === "cobro" ? "Concepto" : "Referencia bancaria"}<input required={type === "transferencia"} value={type === "cobro" ? concept : reference} onChange={(event) => type === "cobro" ? setConcept(event.target.value) : setReference(event.target.value)} placeholder={type === "cobro" ? "Colegiatura" : "Referencia del depósito"} /></label>
-      </> : <><label>{type === "Alumnos" ? "Nombre completo" : "Descripción"}<input required value={name} onChange={(event) => setName(event.target.value)} placeholder="Escribe la información principal" /></label>
+      </> : type === "Nómina" ? <><div className="formRow"><label>Inicio<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label>Fin<input required type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label></div><label>Caja de pago<select value={accountId} onChange={(event) => setAccountId(event.target.value)}><option value="">Sin caja asignada</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label><p className="formNote">Después podrás agregar los empleados y sus percepciones al periodo.</p></>
+      : type === "Becas" ? <><label>Alumno<select required value={studentId} onChange={(event) => setStudentId(event.target.value)}><option value="">Seleccionar alumno</option>{students.map((student) => <option key={student.id} value={student.id}>{student.enrollment} · {student.first_name} {student.last_name}</option>)}</select></label><div className="formRow"><label>Tipo<select value={scholarshipKind} onChange={(event) => setScholarshipKind(event.target.value)}><option value="interna">Interna</option><option value="oficial">Oficial</option></select></label><label>Porcentaje<input required type="number" min="0" max="100" step=".01" value={percentage} onChange={(event) => setPercentage(event.target.value)} /></label></div><label>Concepto<select value={conceptId} onChange={(event) => setConceptId(event.target.value)}><option value="">Todos los conceptos</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label><div className="formRow"><label>Inicio<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label>Fin<input required type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label></div></>
+      : type === "Presupuesto" ? <><label>Nombre del presupuesto<input required value={name} onChange={(event) => setName(event.target.value)} placeholder="Ej. Presupuesto ciclo 2026–2027" /></label><p className="formNote">Se creará el presupuesto base del ciclo activo. Las partidas se podrán agregar desde sus registros.</p></>
+      : <><label>{type === "Alumnos" ? "Nombre completo" : "Descripción"}<input required value={name} onChange={(event) => setName(event.target.value)} placeholder="Escribe la información principal" /></label>
         <div className="formRow"><label>Fecha<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label>{type === "Alumnos" ? "Matrícula" : "Importe"}<input required={type !== "Alumnos"} type={type === "Alumnos" ? "text" : "number"} min={type === "Alumnos" || type === "Conciliación" ? undefined : ".01"} step={type === "Alumnos" ? undefined : ".01"} value={type === "Alumnos" ? enrollment : amount} onChange={(event) => type === "Alumnos" ? setEnrollment(event.target.value) : setAmount(event.target.value)} placeholder={type === "Alumnos" ? "CEI-0001" : "$ 0.00"} /></label></div>
         {type === "Egresos" && <><div className="formRow"><label>Cuenta origen<select required value={accountId} onChange={(event) => setAccountId(event.target.value)}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label><label>Partida<select required value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>{categories.map((category) => <option key={category.id} value={category.id}>{category.name} · {category.type}</option>)}</select></label></div><label>Forma de pago<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option value="efectivo">Efectivo</option><option value="transferencia">Transferencia</option><option value="tarjeta">Tarjeta</option><option value="otro">Otro</option></select></label></>}
         {type === "Traspasos" && <div className="formRow"><label>Cuenta origen<select required value={accountId} onChange={(event) => setAccountId(event.target.value)}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label><label>Cuenta destino<select required value={destinationAccountId} onChange={(event) => setDestinationAccountId(event.target.value)}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label></div>}

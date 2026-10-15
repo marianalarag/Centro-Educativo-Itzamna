@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 type Kind = "student" | "charge" | "income" | "expense" | "transfer" | "bank" | "payroll" | "scholarship" | "budget";
 type Account = { id: string; name: string };
 type Category = { id: string; name: string; type: string };
+type IncomeOption = { id: string; paid_on: string; amount: number; bank_reference: string | null; student_name: string };
 
 const titles: Record<Kind, string> = {
   student: "Editar alumno", charge: "Editar cargo", income: "Editar ingreso",
@@ -19,7 +20,7 @@ export function CorrectionModal({ action, close }: { action: string; close: () =
   const [, kindValue, id, operationValue] = action.split(":");
   const kind = kindValue as Kind;
   const operation = operationValue ?? "edit";
-  const [loading, setLoading] = useState(operation === "edit");
+  const [loading, setLoading] = useState(operation === "edit" || operation === "reconcile");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [reason, setReason] = useState("");
@@ -48,9 +49,11 @@ export function CorrectionModal({ action, close }: { action: string; close: () =
   const [conceptId, setConceptId] = useState("");
   const [active, setActive] = useState(true);
   const [budgetName, setBudgetName] = useState("");
+  const [incomeId, setIncomeId] = useState("");
+  const [incomeOptions, setIncomeOptions] = useState<IncomeOption[]>([]);
 
   useEffect(() => {
-    if (operation !== "edit" || !id) return;
+    if ((operation !== "edit" && operation !== "reconcile") || !id) return;
     async function loadRecord() {
       try {
         if (kind === "student") {
@@ -88,9 +91,22 @@ export function CorrectionModal({ action, close }: { action: string; close: () =
           setAccounts((accountRows ?? []) as Account[]); setAccountId(data.source_account_id); setDestinationAccountId(data.destination_account_id);
           setDate(data.transferred_on); setAmount(String(data.amount)); setDescription(data.reason);
         } else if (kind === "bank") {
-          const { data, error } = await supabase.from("bank_movements").select("bank_date,description,reference,amount,status").eq("id", id).single();
-          if (error) throw error;
-          setDate(data.bank_date); setDescription(data.description); setBankReference(data.reference ?? ""); setAmount(String(data.amount)); setStatus(data.status);
+          if (operation === "reconcile") {
+            const [{ data, error }, { data: incomeRows }] = await Promise.all([
+              supabase.from("bank_movements").select("bank_date,description,reference,amount,status,income_id").eq("id", id).single(),
+              supabase.from("incomes").select("id,paid_on,amount,bank_reference,student_id,students(first_name,last_name)").eq("status", "confirmado").order("paid_on", { ascending: false }).limit(500),
+            ]);
+            if (error) throw error;
+            const options = (incomeRows ?? []).map((income) => {
+              const student = Array.isArray(income.students) ? income.students[0] : income.students;
+              return { id: income.id, paid_on: income.paid_on, amount: Number(income.amount), bank_reference: income.bank_reference, student_name: student ? `${student.first_name} ${student.last_name}` : "Sin alumno" };
+            });
+            setIncomeOptions(options); setIncomeId(data.income_id ?? ""); setDate(data.bank_date); setDescription(data.description); setAmount(String(data.amount));
+          } else {
+            const { data, error } = await supabase.from("bank_movements").select("bank_date,description,reference,amount,status").eq("id", id).single();
+            if (error) throw error;
+            setDate(data.bank_date); setDescription(data.description); setBankReference(data.reference ?? ""); setAmount(String(data.amount)); setStatus(data.status);
+          }
         } else if (kind === "payroll") {
           const [{ data, error }, { data: accountRows }] = await Promise.all([
             supabase.from("payroll_periods").select("starts_on,ends_on,account_id,status").eq("id", id).single(),
@@ -137,7 +153,8 @@ export function CorrectionModal({ action, close }: { action: string; close: () =
     setBusy(true); setMessage("");
     try {
       let result;
-      if (operation === "deactivate") result = await supabase.rpc("deactivate_student", { p_student_id: id, p_reason: reason });
+      if (operation === "reconcile") result = await supabase.rpc("reconcile_bank_movement", { p_movement_id: id, p_income_id: incomeId || null });
+      else if (operation === "deactivate") result = await supabase.rpc("deactivate_student", { p_student_id: id, p_reason: reason });
       else if (operation === "cancel") result = await supabase.rpc(`cancel_${kind}_record`, { [`p_${kind}_id`]: id, p_reason: reason });
       else if (operation === "duplicate") result = await supabase.rpc("mark_bank_movement_duplicate", { p_movement_id: id, p_reason: reason });
       else if (kind === "student") result = await supabase.rpc("update_student_record", {
@@ -177,13 +194,16 @@ export function CorrectionModal({ action, close }: { action: string; close: () =
   }
 
   const isAction = operation !== "edit";
-  const title = isAction ? operation === "deactivate" ? "Dar de baja alumno" : operation === "duplicate" ? "Marcar movimiento duplicado" : `Cancelar ${titles[kind]?.toLowerCase() ?? "registro"}` : titles[kind] ?? "Editar registro";
+  const title = isAction ? operation === "reconcile" ? "Conciliar movimiento bancario" : operation === "deactivate" ? "Dar de baja alumno" : operation === "duplicate" ? "Marcar movimiento duplicado" : `Cancelar ${titles[kind]?.toLowerCase() ?? "registro"}` : titles[kind] ?? "Editar registro";
 
   return <div className="modalLayer" role="dialog" aria-modal="true">
     <button className="backdrop" onClick={close} aria-label="Cerrar" />
     <form className="modal correctionModal" onSubmit={save}>
       <div className="modalHead"><div><p className="eyebrow">CORRECCIÓN OPERATIVA</p><h2>{title}</h2></div><button type="button" className="iconButton" onClick={close}><X size={20} /></button></div>
-      {isAction ? <>
+      {operation === "reconcile" ? <>
+        <p className="formNote">Selecciona el ingreso confirmado que corresponde al movimiento bancario. El importe debe coincidir.</p>
+        <label>Ingreso relacionado<select required value={incomeId} onChange={(event) => setIncomeId(event.target.value)}><option value="">Seleccionar ingreso</option>{incomeOptions.map((income) => <option key={income.id} value={income.id}>{income.paid_on} · {income.student_name} · {new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" }).format(income.amount)}{income.bank_reference ? ` · ${income.bank_reference}` : ""}</option>)}</select></label>
+      </> : isAction ? <>
         <p className="formNote">El registro no se borrará físicamente. Se conservará en el historial y dejará de contar en los saldos operativos.</p>
         <label>Motivo<textarea required value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Explica por qué se corrige o cancela" /></label>
       </> : loading ? <p className="formNote">Cargando datos…</p> : <>
@@ -198,7 +218,7 @@ export function CorrectionModal({ action, close }: { action: string; close: () =
         {kind === "budget" && <><label>Nombre del presupuesto<input required value={budgetName} onChange={(event) => setBudgetName(event.target.value)} /></label><label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="borrador">Borrador</option><option value="confirmado">Confirmado</option></select></label></>}
       </>}
       {message && <p className="formError">{message}</p>}
-      <div className="modalActions"><button type="button" className="secondary" onClick={close}>Cerrar</button><button className={isAction ? "primary dangerButton" : "primary"} disabled={busy || loading}>{busy ? "Guardando…" : isAction ? "Confirmar acción" : "Guardar cambios"}</button></div>
+      <div className="modalActions"><button type="button" className="secondary" onClick={close}>Cerrar</button><button className={isAction && operation !== "reconcile" ? "primary dangerButton" : "primary"} disabled={busy || loading}>{busy ? "Guardando…" : operation === "reconcile" ? "Conciliar movimiento" : isAction ? "Confirmar acción" : "Guardar cambios"}</button></div>
     </form>
   </div>;
 }

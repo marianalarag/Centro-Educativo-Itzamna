@@ -46,3 +46,6 @@ módulos escolares futuros.
 Antes de producción se deben validar con Dirección: catálogo contable, reglas
 de vencimiento, folios, autorización de saldos negativos, retención de
 respaldos y política de datos personales.
+
+La guía de operación diaria y correcciones está en
+`docs/OPERACION_REAL.md`.
