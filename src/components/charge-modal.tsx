@@ -7,7 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 type Student = { id: string; enrollment: string; first_name: string; last_name: string; level: string; grade: string };
 type Concept = { id: string; name: string; base_amount: number };
 type Fee = { concept_id: string; level: string; grade: string; amount: number };
-type SaveResult = { base_amount: number; late_fee_amount: number; total: number; payment_status: string };
+type SaveResult = { base_amount: number; late_fee_amount: number; total: number; payment_amount: number; receipt_id: string | null; payment_status: string };
 
 const money = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
 const today = () => new Date().toISOString().slice(0, 10);
@@ -25,10 +25,12 @@ export function ChargeModal({ close }: { close: () => void }) {
   const [paidOn, setPaidOn] = useState(today());
   const [lateRate, setLateRate] = useState(10);
   const [method, setMethod] = useState("efectivo");
+  const [paymentAmount, setPaymentAmount] = useState("");
   const [newStudent, setNewStudent] = useState({ enrollment: "", firstName: "", lastName: "", level: "Primaria", grade: "", tutor: "", phone: "" });
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+  const [receipt, setReceipt] = useState<{ folio: string; total: number } | null>(null);
 
   const selectedStudent = students.find((student) => student.id === studentId);
   const selectedConcept = concepts.find((concept) => concept.id === conceptId);
@@ -39,6 +41,7 @@ export function ChargeModal({ close }: { close: () => void }) {
   const isLate = paymentMode === "paid" && !!paidOn && !!dueOn && paidOn > dueOn;
   const lateFee = isLate ? Math.round(baseAmount * lateRate) / 100 : 0;
   const total = baseAmount + lateFee;
+  const payableAmount = paymentAmount ? Number(paymentAmount) : total;
 
   useEffect(() => {
     async function loadCatalogs() {
@@ -82,17 +85,46 @@ export function ChargeModal({ close }: { close: () => void }) {
         p_base_amount: baseAmount,
         p_late_fee_rate: lateRate,
         p_payment_method: method,
+        p_payment_amount: paymentMode === "paid" && paymentAmount ? Number(paymentAmount) : null,
       });
       if (error) throw error;
       const result = data as SaveResult;
       window.dispatchEvent(new Event("cei:data-changed"));
-      setMessage(result.payment_status === "no_pagado" ? "Adeudo guardado. El alumno aparecera como no pagado." : `Pago guardado por ${money.format(result.total)}.`);
-      window.setTimeout(close, 900);
+      if (result.payment_status === "no_pagado") {
+        setMessage("Adeudo guardado. El alumno aparecerá como no pagado.");
+        window.setTimeout(close, 900);
+      } else {
+        setMessage(result.payment_status === "parcial"
+          ? `Pago parcial guardado por ${money.format(result.payment_amount)}.`
+          : `Pago guardado por ${money.format(result.payment_amount)}.`);
+        if (result.receipt_id) {
+          const { data: savedReceipt } = await supabase.from("receipts").select("folio,total").eq("id", result.receipt_id).maybeSingle();
+          if (savedReceipt) setReceipt({ folio: savedReceipt.folio, total: Number(savedReceipt.total) });
+        }
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "No se pudo guardar el cobro.");
     } finally {
       setBusy(false);
     }
+  }
+
+  function printReceipt() {
+    if (!receipt) return;
+    const student = studentMode === "existing" ? selectedStudent : {
+      enrollment: newStudent.enrollment,
+      first_name: newStudent.firstName,
+      last_name: newStudent.lastName,
+      grade: newStudent.grade,
+    };
+    const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[character] ?? character));
+    const printWindow = window.open("", "cei-recibo", "width=480,height=700");
+    if (!printWindow) return;
+    printWindow.document.write(`<!doctype html><html><head><title>Recibo ${escapeHtml(receipt.folio)}</title><style>body{font-family:Arial,sans-serif;padding:28px;color:#173f35}h1{font-size:20px;margin:0 0 6px}p{margin:7px 0;color:#445}strong{color:#173f35}.total{font-size:22px;border-top:1px solid #ccd8d2;margin-top:22px;padding-top:14px}</style></head><body><h1>Centro Educativo Itzamná</h1><p>Recibo <strong>${escapeHtml(receipt.folio)}</strong></p><p>Alumno: <strong>${escapeHtml(`${student?.first_name ?? ""} ${student?.last_name ?? ""}`)}</strong></p><p>Matrícula: ${escapeHtml(student?.enrollment ?? "")}</p><p>Grado: ${escapeHtml(student?.grade ?? "")}</p><p>Concepto: ${escapeHtml(selectedConcept?.name ?? "")}</p><p>Forma de pago: ${escapeHtml(method)}</p><p class="total">Total recibido: <strong>${money.format(receipt.total)}</strong></p></body></html>`);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+    printWindow.close();
   }
 
   return <div className="modalLayer" role="dialog" aria-modal="true" aria-label="Nuevo cobro">
@@ -123,17 +155,19 @@ export function ChargeModal({ close }: { close: () => void }) {
         <button type="button" className={paymentMode === "pending" ? "active danger" : ""} onClick={() => setPaymentMode("pending")}><AlertTriangle size={16}/>Dejar pendiente</button>
       </div>
 
-      {paymentMode === "paid" && <div className="formRow"><label>Fecha de pago<input required type="date" value={paidOn} onChange={(event) => setPaidOn(event.target.value)} /></label><label>Forma de pago<select value={method} onChange={(event) => setMethod(event.target.value)}><option value="efectivo">Efectivo</option><option value="transferencia">Transferencia</option><option value="tarjeta">Tarjeta</option><option value="otro">Otro</option></select></label></div>}
+      {paymentMode === "paid" && <><div className="formRow"><label>Fecha de pago<input required type="date" value={paidOn} onChange={(event) => setPaidOn(event.target.value)} /></label><label>Forma de pago<select value={method} onChange={(event) => setMethod(event.target.value)}><option value="efectivo">Efectivo</option><option value="transferencia">Transferencia</option><option value="tarjeta">Tarjeta</option><option value="otro">Otro</option></select></label></div><label>Importe recibido <small>(vacío = liquidar el total)</small><input type="number" min=".01" step=".01" value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} placeholder={money.format(total)} /></label></>}
 
       <div className={`chargeSummary ${paymentMode === "pending" ? "pending" : isLate ? "late" : "paid"}`}>
         <div><span>Precio base</span><b>{money.format(baseAmount)}</b></div>
         <div><span>{isLate ? `Recargo (${lateRate}%)` : "Recargo"}</span><b>{money.format(lateFee)}</b></div>
+        {paymentMode === "paid" && paymentAmount && <div><span>Importe recibido</span><b>{money.format(payableAmount)}</b></div>}
         <strong><span>{paymentMode === "pending" ? "Saldo pendiente" : "Total a cobrar"}</span>{money.format(total)}</strong>
         <p>{paymentMode === "pending" ? <><AlertTriangle size={15}/>Se guardara como NO HA PAGADO y sera visible en el dashboard.</> : isLate ? <><Clock3 size={15}/>Pago posterior al vencimiento. Se aplicara el recargo.</> : <><CheckCircle2 size={15}/>Pago dentro de la fecha establecida.</>}</p>
       </div>
 
       {message && <p className={message.startsWith("Pago") || message.startsWith("Adeudo") ? "formSuccess" : "formError"}>{message}</p>}
-      <div className="modalActions"><button type="button" className="secondary" onClick={close}>Cancelar</button><button className="primary" disabled={busy || loading}>{busy ? "Guardando..." : paymentMode === "pending" ? "Guardar adeudo" : `Cobrar ${money.format(total)}`}</button></div>
+      {receipt && <div className="formSuccess"><strong>Recibo {receipt.folio}</strong><button type="button" className="secondary" onClick={printReceipt}>Imprimir recibo</button></div>}
+      <div className="modalActions"><button type="button" className="secondary" onClick={close}>Cerrar</button>{!receipt && <button className="primary" disabled={busy || loading}>{busy ? "Guardando..." : paymentMode === "pending" ? "Guardar adeudo" : `Cobrar ${money.format(payableAmount)}`}</button>}</div>
     </form>
   </div>;
 }

@@ -16,8 +16,9 @@ npm install
 npm run dev
 ```
 
-La pantalla inicial incluye datos demostrativos para validar el diseño con el
-cliente antes de conectar información real.
+La operación real inicia después de aplicar todas las migraciones. La prueba
+financiera no se carga automáticamente: Dirección puede cargarla desde
+Alumnos y retirarla desde el mismo lugar mediante cancelación lógica.
 
 ## Arquitectura
 
@@ -26,16 +27,18 @@ cliente antes de conectar información real.
 - `register_cash_payment` crea recibo, ingreso y aplicaciones en una sola
   transacción. Si alguna validación falla, no se guarda ningún fragmento.
 - Los traspasos se registran aparte y no inflan ingresos ni egresos.
-- Las cancelaciones deben implementarse como cambios de estado y
-  contramovimientos, nunca como borrados.
+- Desde las tablas operativas se pueden editar alumnos, cargos, ingresos,
+  conciliaciones, egresos y traspasos. Los movimientos financieros se cancelan
+  con motivo y conservan el historial; al cancelar un ingreso se revierten sus
+  aplicaciones sobre los cargos.
 
 ## Alcance recomendado
 
-**Etapa 1:** autenticación, catálogos, alumnos/importación, cartera, caja,
-transferencias, egresos, traspasos y estados de cuenta tabulares.
+**Etapa 1 operativa:** autenticación, ciclo actual, alumnos/importación, cartera,
+pagos parciales, caja, transferencias, egresos, traspasos y reportes tabulares
+exportables.
 
-**Etapa 2:** nómina, conciliación bancaria importada, presupuesto, reportes
-financieros y exportaciones.
+**Etapa 2:** nómina, presupuesto y automatizaciones adicionales de reportes.
 
 **Etapa 3:** sugerencias automáticas para transferencias, portal de tutores y
 módulos escolares futuros.

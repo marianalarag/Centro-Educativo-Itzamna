@@ -31,6 +31,7 @@ export function StudentImportModal({
   const [fileName, setFileName] = useState("");
   const [demoMode, setDemoMode] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [clearBusy, setClearBusy] = useState(false);
   const [message, setMessage] = useState("");
 
   async function selectFile(event: ChangeEvent<HTMLInputElement>) {
@@ -85,6 +86,21 @@ export function StudentImportModal({
     setBusy(false);
   }
 
+  async function clearDemo() {
+    if (!window.confirm("Se cancelarán y ocultarán únicamente los registros marcados como demostración. ¿Continuar?")) return;
+    setClearBusy(true);
+    setMessage("");
+    const { data, error } = await supabase.rpc("clear_financial_demo", { p_confirmation: "BORRAR_PRUEBA_CEI" });
+    if (error) {
+      setMessage(error.message);
+    } else {
+      const result = data as { students?: number; charges?: number; incomes?: number; expenses?: number } | null;
+      setMessage(`Prueba retirada: ${result?.students ?? 0} alumnos, ${result?.charges ?? 0} cargos, ${result?.incomes ?? 0} ingresos y ${result?.expenses ?? 0} egresos.`);
+      window.dispatchEvent(new Event("cei:data-changed"));
+    }
+    setClearBusy(false);
+  }
+
   return <div className="modalLayer" role="dialog" aria-modal="true" aria-label="Importar alumnos">
     <button className="backdrop" onClick={close} aria-label="Cerrar" />
     <section className="modal importModal">
@@ -102,9 +118,14 @@ export function StudentImportModal({
         <a className="secondary templateLink" href="/plantilla-alumnos.csv" download>
           <Download size={17} /> Plantilla
         </a>
-        {role === "direccion" && <button className="secondary" type="button" onClick={useDemo} disabled={busy}>
-          <FileSpreadsheet size={17} /> Usar prueba de 10
-        </button>}
+        {(role === "direccion" || role === "admin") && <>
+          <button className="secondary" type="button" onClick={useDemo} disabled={busy || clearBusy}>
+            <FileSpreadsheet size={17} /> Usar prueba de 10
+          </button>
+          <button className="secondary" type="button" onClick={clearDemo} disabled={busy || clearBusy}>
+            {clearBusy ? "Retirando prueba…" : "Retirar datos de prueba"}
+          </button>
+        </>}
       </div>
 
       {fileName && <div className="selectedFile"><FileSpreadsheet size={17} /><span>{fileName}</span><strong>{rows.length} válidos</strong></div>}

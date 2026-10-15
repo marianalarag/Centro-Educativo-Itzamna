@@ -116,6 +116,7 @@ function rowsFromMatrix(matrix: Cell[][]): ParsedStudentFile {
 
   const get = (row: Cell[], key: string) => indexes[key] >= 0 ? row[indexes[key]] : null;
   const rows: StudentImportRow[] = [];
+  const seenEnrollments = new Set<string>();
 
   matrix.slice(1).forEach((rawRow, index) => {
     const rowNumber = index + 2;
@@ -135,6 +136,8 @@ function rowsFromMatrix(matrix: Cell[][]): ParsedStudentFile {
 
     const rowErrors: string[] = [];
     if (!enrollment) rowErrors.push("matrícula vacía");
+    const normalizedEnrollment = normalize(enrollment);
+    if (normalizedEnrollment && seenEnrollments.has(normalizedEnrollment)) rowErrors.push("matrícula repetida en el archivo");
     if (!firstName) rowErrors.push("nombre vacío");
     if (!grade) rowErrors.push("grado vacío");
     if (indexes.amount >= 0 && (!Number.isFinite(amount) || amount <= 0)) rowErrors.push("monto inválido");
@@ -146,6 +149,7 @@ function rowsFromMatrix(matrix: Cell[][]): ParsedStudentFile {
       return;
     }
 
+    seenEnrollments.add(normalizedEnrollment);
     rows.push({
       enrollment,
       first_name: firstName,

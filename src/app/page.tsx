@@ -10,6 +10,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { StudentImportModal } from "@/components/student-import-modal";
 import { ChargeModal } from "@/components/charge-modal";
+import { CorrectionModal } from "@/components/correction-modal";
 import { ReportCenter } from "@/components/report-center";
 
 const nav = [
@@ -36,6 +37,7 @@ type FinancialMonth = { key: string; label: string; income: number; expense: num
 type FinancialEntry = { date: string; amount: number; type: "income" | "expense" };
 type PaymentStatusRow = {
   student_id: string;
+  charge_id: string | null;
   enrollment: string;
   first_name: string;
   last_name: string;
@@ -53,6 +55,10 @@ type PaymentStatusRow = {
 function formatDate(value: string | null) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(`${value}T00:00:00Z`));
+}
+
+function normalizeSearch(value: string) {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("es");
 }
 
 function paymentStatusPresentation(status: PaymentStatusRow["payment_status"]) {
@@ -94,9 +100,10 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
   const [financialEntries, setFinancialEntries] = useState<FinancialEntry[]>([]);
   const [userName, setUserName] = useState("Personal autorizado");
   const [userRole, setUserRole] = useState("captura");
+  const [activeCycleName, setActiveCycleName] = useState("Ciclo actual");
   const displayMovements: readonly MovementRow[] = dbMovements;
   const visible = useMemo(() => displayMovements.filter((m) =>
-    m.join(" ").toLocaleLowerCase("es").includes(query.toLocaleLowerCase("es")) &&
+    normalizeSearch(m.join(" ")).includes(normalizeSearch(query)) &&
     (movementType === "todos" || m[6] === movementType)), [displayMovements, movementType, query]);
   const dashboardGrades = useMemo(() => Array.from(new Set(paymentStatuses.map((row) => row.grade).filter(Boolean))).sort(), [paymentStatuses]);
   const visiblePaymentStatuses = useMemo(() => paymentStatuses.filter((row) =>
@@ -170,13 +177,15 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
 
   useEffect(() => {
     async function loadDashboard() {
-      const [{ data: incomes }, { data: expenses }, { data: students }, { data: charges }, { data: statuses }] = await Promise.all([
+      const [{ data: incomes }, { data: expenses }, { data: students }, { data: charges }, { data: statuses }, { data: cycle }] = await Promise.all([
         supabase.from("incomes").select("id,amount,paid_on,payment_method,student_id").eq("status", "confirmado").order("paid_on", { ascending: false }).limit(1000),
         supabase.from("expenses").select("id,total,spent_on,payment_method,description").eq("status", "confirmado").order("spent_on", { ascending: false }).limit(1000),
         supabase.from("students").select("id,first_name,last_name"),
         supabase.from("charges").select("net_amount,paid_amount").in("status", ["pendiente", "parcial", "vencido"]),
-        supabase.from("student_payment_status").select("student_id,enrollment,first_name,last_name,grade,concept,net_amount,late_fee_amount,paid_amount,balance,due_on,paid_on,payment_status").order("enrollment").limit(50),
+        supabase.from("student_payment_status").select("student_id,enrollment,first_name,last_name,grade,concept,net_amount,late_fee_amount,paid_amount,balance,due_on,paid_on,payment_status").order("enrollment").limit(1000),
+        supabase.from("school_cycles").select("name").eq("active", true).order("starts_on", { ascending: false }).limit(1).maybeSingle(),
       ]);
+      if (cycle?.name) setActiveCycleName(cycle.name);
       const studentMap = new Map((students ?? []).map((student) => [student.id, `${student.first_name} ${student.last_name}`]));
       const incomeRows: MovementRow[] = (incomes ?? []).map((income) => [
         `ING-${income.id.slice(0, 6).toUpperCase()}`, formatDate(income.paid_on), studentMap.get(income.student_id ?? "") ?? "Depósito sin identificar",
@@ -298,7 +307,7 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
       <main>
         <header>
           <button className="menuButton" onClick={() => setMenu(true)}><Menu size={22} /></button>
-          <div className="cycle"><span>Ciclo escolar</span><button>2025 – 2026 <ChevronDown size={15} /></button></div>
+          <div className="cycle"><span>Ciclo escolar</span><button>{activeCycleName} <ChevronDown size={15} /></button></div>
           <div className="headerRight notificationArea"><button className="iconButton notificationBell" aria-label="Notificaciones" aria-expanded={notificationOpen} onClick={() => setNotificationOpen((open) => !open)}><Bell size={20} />{unreadNotifications > 0 && <em>{unreadNotifications > 9 ? "9+" : unreadNotifications}</em>}</button>
             {notificationOpen && <div className="notificationPanel">
               <div className="notificationHead"><div><strong>Notificaciones</strong><span>{unreadNotifications ? `${unreadNotifications} sin leer` : "Todo al día"}</span></div>{unreadNotifications > 0 && <button onClick={() => markNotificationsRead()}><CheckCheck size={15}/>Marcar leídas</button>}</div>
@@ -387,6 +396,8 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
         ? <StudentImportModal close={() => setModal(null)} role={userRole} />
         : modal === "cobro"
           ? <ChargeModal close={() => setModal(null)} />
+        : modal?.startsWith("correction:")
+          ? <CorrectionModal action={modal} close={() => setModal(null)} />
         : modal && <QuickForm type={modal} close={() => setModal(null)} />}
       {passwordModalOpen && <div className="modalLayer" role="dialog" aria-modal="true" aria-labelledby="password-modal-title">
         <button className="backdrop" onClick={() => setPasswordModalOpen(false)} aria-label="Cerrar" />
@@ -544,19 +555,23 @@ const moduleFilters: Record<string, Array<{ label: string; column: number }>> = 
 function ModuleView({ name, openForm }: { name: string; openForm: (type: string) => void }) {
   const supabase = useMemo(() => createClient(), []);
   const data = moduleData[name] ?? moduleData.Alumnos;
-  const [rows, setRows] = useState<string[][]>(data.rows);
+  const liveModule = ["Alumnos", "Cobros", "Ingresos", "Conciliación", "Egresos", "Traspasos"].includes(name);
+  const [rows, setRows] = useState<string[][]>([]);
+  const [rowActions, setRowActions] = useState<Record<string, { kind: "student" | "charge" | "income" | "expense" | "transfer" | "bank"; id: string }>>({});
   const [query, setQuery] = useState("");
   const [firstFilter, setFirstFilter] = useState("todos");
   const [secondFilter, setSecondFilter] = useState("todos");
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [studentMetrics, setStudentMetrics] = useState({ total: 0, paidRate: 0, averageCharge: 0, pending: 0 });
-  const liveModule = ["Alumnos", "Cobros", "Ingresos", "Egresos"].includes(name);
+  const operationalModule = liveModule;
 
   useEffect(() => {
     async function loadRows() {
       if (!liveModule) {
-        setRows(data.rows);
+        setRows([]);
+        setRowActions({});
+        setLoadError("Este módulo todavía está en preparación y no muestra datos operativos.");
         return;
       }
       setLoading(true);
@@ -565,7 +580,7 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
         if (name === "Alumnos" || name === "Cobros") {
           const { data: statuses, error } = await supabase
             .from("student_payment_status")
-            .select("student_id,enrollment,first_name,last_name,level,grade,tutor_name,tutor_phone,concept,net_amount,late_fee_amount,paid_amount,balance,due_on,paid_on,payment_status")
+            .select("student_id,charge_id,enrollment,first_name,last_name,level,grade,tutor_name,tutor_phone,concept,net_amount,late_fee_amount,paid_amount,balance,due_on,paid_on,payment_status")
             .order("enrollment");
           if (error) throw error;
           const items = (statuses ?? []) as Array<PaymentStatusRow & { level: string; tutor_name: string | null; tutor_phone: string | null }>;
@@ -575,9 +590,16 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
             averageCharge: items.length ? items.reduce((sum, item) => sum + Number(item.net_amount ?? 0), 0) / items.length : 0,
             pending: items.reduce((sum, item) => sum + Number(item.balance ?? 0), 0),
           });
-          setRows(name === "Alumnos"
+          const nextRows = name === "Alumnos"
             ? items.map((item) => [item.enrollment, `${item.first_name} ${item.last_name}`, `${item.grade} · ${item.level}`, item.tutor_name ?? "—", item.tutor_phone ?? "—", paymentStatusPresentation(item.payment_status).label])
-            : items.map((item) => [`${item.first_name} ${item.last_name}`, item.concept ?? "Sin cargo", formatDate(item.due_on), money.format(Number(item.net_amount ?? 0)), money.format(Number(item.late_fee_amount ?? 0)), money.format(Number(item.paid_amount ?? 0)), money.format(Number(item.balance ?? 0)), paymentStatusPresentation(item.payment_status).label]));
+            : items.map((item) => [`${item.first_name} ${item.last_name}`, item.concept ?? "Sin cargo", formatDate(item.due_on), money.format(Number(item.net_amount ?? 0)), money.format(Number(item.late_fee_amount ?? 0)), money.format(Number(item.paid_amount ?? 0)), money.format(Number(item.balance ?? 0)), paymentStatusPresentation(item.payment_status).label]);
+          setRows(nextRows);
+          const nextActions: Record<string, { kind: "student" | "charge"; id: string }> = {};
+          nextRows.forEach((row, index) => {
+            const id = name === "Alumnos" ? items[index].student_id : items[index].charge_id;
+            if (id) nextActions[row.join("\u001f")] = { kind: name === "Alumnos" ? "student" : "charge", id };
+          });
+          setRowActions(nextActions);
         } else if (name === "Ingresos") {
           const [{ data: incomes, error }, { data: students }] = await Promise.all([
             supabase.from("incomes").select("id,paid_on,student_id,payment_method,amount,reconciliation_status").eq("status", "confirmado").order("paid_on", { ascending: false }).limit(100),
@@ -585,26 +607,64 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
           ]);
           if (error) throw error;
           const studentMap = new Map((students ?? []).map((student) => [student.id, `${student.first_name} ${student.last_name}`]));
-          setRows((incomes ?? []).map((income) => [
+          const nextRows = (incomes ?? []).map((income) => [
             `ING-${income.id.slice(0, 6).toUpperCase()}`, formatDate(income.paid_on), studentMap.get(income.student_id ?? "") ?? "Sin identificar",
             "Colegiatura", income.payment_method, money.format(Number(income.amount)), String(income.reconciliation_status).replace("_", " "),
-          ]));
+          ]);
+          setRows(nextRows);
+          setRowActions(Object.fromEntries(nextRows.map((row, index) => [row.join("\u001f"), { kind: "income" as const, id: incomes?.[index].id }] )));
+        } else if (name === "Conciliación") {
+          const [{ data: movements, error }, { data: incomes }, { data: students }] = await Promise.all([
+            supabase.from("bank_movements").select("id,bank_date,reference,description,amount,income_id,status").order("bank_date", { ascending: false }).limit(100),
+            supabase.from("incomes").select("id,student_id,amount,status").eq("status", "confirmado").limit(1000),
+            supabase.from("students").select("id,first_name,last_name"),
+          ]);
+          if (error) throw error;
+          const studentMap = new Map((students ?? []).map((student) => [student.id, `${student.first_name} ${student.last_name}`]));
+          const incomeMap = new Map((incomes ?? []).map((income) => [income.id, income]));
+          const nextRows = (movements ?? []).map((movement) => {
+            const income = movement.income_id ? incomeMap.get(movement.income_id) : null;
+            return [formatDate(movement.bank_date), movement.reference || movement.description, money.format(Math.abs(Number(movement.amount))),
+              income?.student_id ? studentMap.get(income.student_id) ?? "Sin identificar" : "Sin coincidencia",
+              income ? money.format(Number(income.amount)) : "—",
+              income ? money.format(Math.abs(Number(movement.amount)) - Number(income.amount)) : money.format(Math.abs(Number(movement.amount))),
+              String(movement.status).replace("_", " ")];
+          });
+          setRows(nextRows);
+          setRowActions(Object.fromEntries(nextRows.map((row, index) => [row.join("\u001f"), { kind: "bank" as const, id: movements?.[index].id }] )));
         } else if (name === "Egresos") {
           const [{ data: expenses, error }, { data: categories }, { data: accounts }] = await Promise.all([
-            supabase.from("expenses").select("id,spent_on,category_id,account_id,supplier,description,total,status").order("spent_on", { ascending: false }).limit(100),
+            supabase.from("expenses").select("id,spent_on,category_id,account_id,supplier,description,total,status").eq("status", "confirmado").order("spent_on", { ascending: false }).limit(100),
             supabase.from("expense_categories").select("id,name,type"),
             supabase.from("accounts").select("id,name"),
           ]);
           if (error) throw error;
           const categoryMap = new Map((categories ?? []).map((category) => [category.id, category]));
           const accountMap = new Map((accounts ?? []).map((account) => [account.id, account.name]));
-          setRows((expenses ?? []).map((expense) => {
+          const nextRows = (expenses ?? []).map((expense) => {
             const category = categoryMap.get(expense.category_id);
             return [`EGR-${expense.id.slice(0, 6).toUpperCase()}`, formatDate(expense.spent_on), category?.type ?? "gasto", category?.name ?? "Sin categoría", expense.description, accountMap.get(expense.account_id) ?? "—", money.format(Number(expense.total))];
-          }));
+          });
+          setRows(nextRows);
+          setRowActions(Object.fromEntries(nextRows.map((row, index) => [row.join("\u001f"), { kind: "expense" as const, id: expenses?.[index].id }] )));
+        } else if (name === "Traspasos") {
+          const [{ data: transfers, error }, { data: accounts }] = await Promise.all([
+            supabase.from("transfers").select("id,transferred_on,source_account_id,destination_account_id,reason,amount,status").eq("status", "confirmado").order("transferred_on", { ascending: false }).limit(100),
+            supabase.from("accounts").select("id,name"),
+          ]);
+          if (error) throw error;
+          const accountMap = new Map((accounts ?? []).map((account) => [account.id, account.name]));
+          const nextRows = (transfers ?? []).map((transfer) => [
+            `TRA-${transfer.id.slice(0, 6).toUpperCase()}`, formatDate(transfer.transferred_on),
+            accountMap.get(transfer.source_account_id) ?? "—", accountMap.get(transfer.destination_account_id) ?? "—",
+            transfer.reason, money.format(Number(transfer.amount)), String(transfer.status),
+          ]);
+          setRows(nextRows);
+          setRowActions(Object.fromEntries(nextRows.map((row, index) => [row.join("\u001f"), { kind: "transfer" as const, id: transfers?.[index].id }] )));
         }
       } catch (error) {
         setRows([]);
+        setRowActions({});
         setLoadError(error instanceof Error ? error.message : "No se pudieron cargar los registros.");
       } finally {
         setLoading(false);
@@ -619,14 +679,15 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
   const firstOptions = useMemo(() => Array.from(new Set(rows.map((row) => row[filters[0]?.column]).filter(Boolean))).sort(), [filters, rows]);
   const secondOptions = useMemo(() => Array.from(new Set(rows.map((row) => row[filters[1]?.column]).filter(Boolean))).sort(), [filters, rows]);
   const visibleRows = useMemo(() => rows.filter((row) => {
-    const matchesQuery = row.join(" ").toLocaleLowerCase("es").includes(query.toLocaleLowerCase("es"));
+    const matchesQuery = normalizeSearch(row.join(" ")).includes(normalizeSearch(query));
     return matchesQuery &&
       (firstFilter === "todos" || row[filters[0]?.column] === firstFilter) &&
       (secondFilter === "todos" || row[filters[1]?.column] === secondFilter);
   }), [filters, firstFilter, query, rows, secondFilter]);
+  const hasActions = Object.keys(rowActions).length > 0;
   const act = () => openForm(name === "Cobros" ? "cobro" : name === "Ingresos" ? "transferencia" : name);
   return <section className="modulePage">
-    <div className="moduleHead"><div><p className="eyebrow">CICLO ACTIVO</p><h1>{data.title}</h1><p>{data.subtitle}</p></div><div className="moduleHeadActions">{name === "Alumnos" && <button className="secondary" onClick={() => openForm("importar-alumnos")}><Upload size={18}/>Importar lista</button>}<button className="primary" onClick={act}><Plus size={18}/>{data.action}</button></div></div>
+    <div className="moduleHead"><div><p className="eyebrow">CICLO ACTIVO</p><h1>{data.title}</h1><p>{data.subtitle}</p></div><div className="moduleHeadActions">{name === "Alumnos" && <button className="secondary" onClick={() => openForm("importar-alumnos")}><Upload size={18}/>Importar lista</button>}{operationalModule && <button className="primary" onClick={act}><Plus size={18}/>{data.action}</button>}</div></div>
     {name === "Alumnos" && <div className="studentMetrics">
       <div><span>Alumnos</span><strong>{studentMetrics.total}</strong></div>
       <div><span>Con pago registrado</span><strong className="financialPositive">{studentMetrics.paidRate}%</strong></div>
@@ -634,11 +695,11 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
       <div><span>Saldo pendiente</span><strong className="financialNegative">{money.format(studentMetrics.pending)}</strong></div>
     </div>}
     <div className="moduleTools"><label className="search"><Search size={18}/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Buscar en ${data.title.toLowerCase()}…`}/></label><div className="studentFilters">{filters[0] && <label><span>{filters[0].label}</span><select value={firstFilter} onChange={(event) => setFirstFilter(event.target.value)}><option value="todos">Todos</option>{firstOptions.map((option) => <option key={option}>{option}</option>)}</select></label>}{filters[1] && <label><span>{filters[1].label}</span><select value={secondFilter} onChange={(event) => setSecondFilter(event.target.value)}><option value="todos">Todos</option>{secondOptions.map((option) => <option key={option}>{option}</option>)}</select></label>}</div></div>
-    <div className="panel moduleTable"><div className="tableWrap"><table><thead><tr>{data.headers.map(h=><th key={h}>{h}</th>)}</tr></thead><tbody>{visibleRows.map((row,i)=><tr key={`${row[0]}-${i}`}>{row.map((cell,j)=>{
+    <div className="panel moduleTable"><div className="tableWrap"><table><thead><tr>{data.headers.map(h=><th key={h}>{h}</th>)}{hasActions && <th>Acciones</th>}</tr></thead><tbody>{visibleRows.map((row,i)=>{ const action = rowActions[row.join("\u001f")]; return <tr key={`${row[0]}-${i}`}>{row.map((cell,j)=>{
       const isStatus = data.headers[j] === "Estado";
       const statusTone = cell === "Pagado" ? "paid" : cell === "Pagó con retardo" ? "late" : cell === "No ha pagado" ? "unpaid" : "";
       return <td data-label={data.headers[j]} className={[j===1?"person":"", getFinancialTone(name, data.headers[j], cell, row)].filter(Boolean).join(" ")} key={j}>{isStatus && statusTone ? <span className={`paymentBadge ${statusTone}`}>{cell}</span> : cell}</td>;
-    })}</tr>)}</tbody></table>{loading && <div className="empty">Cargando registros…</div>}{!loading && !visibleRows.length && !loadError && <div className="empty">No hay registros para mostrar.</div>}{loadError && <div className="empty errorText">{loadError}</div>}</div><div className="panelFooter"><span>{visibleRows.length} registros disponibles</span></div></div>
+    })}{action && <td data-label="Acciones"><div className="tableActions"><button type="button" className="tableAction" onClick={() => openForm(`correction:${action.kind}:${action.id}:edit`)}>Editar</button>{action.kind !== "bank" || row[6] !== "duplicado" ? <button type="button" className="tableAction dangerAction" onClick={() => openForm(`correction:${action.kind}:${action.id}:${action.kind === "student" ? "deactivate" : action.kind === "bank" ? "duplicate" : "cancel"}`)}>{action.kind === "student" ? "Dar de baja" : action.kind === "bank" ? "Marcar duplicado" : "Cancelar"}</button> : null}</div></td>}</tr>})}</tbody></table>{loading && <div className="empty">Cargando registros…</div>}{!loading && !visibleRows.length && !loadError && <div className="empty">No hay registros para mostrar.</div>}{loadError && <div className="empty errorText">{loadError}</div>}</div><div className="panelFooter"><span>{visibleRows.length} registros disponibles</span></div></div>
   </section>;
 }
 
@@ -698,6 +759,12 @@ function QuickFormLegacy({ type, close }: { type: string; close: () => void }) {
 function QuickForm({ type, close }: { type: string; close: () => void }) {
   const supabase = useMemo(() => createClient(), []);
   const payment = type === "cobro" || type === "transferencia";
+  const [accounts, setAccounts] = useState<Array<{ id: string; name: string }>>([]);
+  const [categories, setCategories] = useState<Array<{ id: string; name: string; type: string }>>([]);
+  const [accountId, setAccountId] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("efectivo");
+  const [destinationAccountId, setDestinationAccountId] = useState("");
   const [name, setName] = useState("");
   const [enrollment, setEnrollment] = useState("");
   const [amount, setAmount] = useState("");
@@ -709,6 +776,24 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    if (type !== "Egresos" && type !== "Traspasos" && type !== "Conciliación") return;
+    async function loadCatalogs() {
+      const [{ data: accountRows }, { data: categoryRows }] = await Promise.all([
+        supabase.from("accounts").select("id,name").eq("active", true).order("name"),
+        type === "Egresos" ? supabase.from("expense_categories").select("id,name,type").eq("active", true).order("name") : Promise.resolve({ data: [] as Array<{ id: string; name: string; type: string }> }),
+      ]);
+      const nextAccounts = (accountRows ?? []) as Array<{ id: string; name: string }>;
+      const nextCategories = (categoryRows ?? []) as Array<{ id: string; name: string; type: string }>;
+      setAccounts(nextAccounts);
+      setCategories(nextCategories);
+      setAccountId(nextAccounts[0]?.id ?? "");
+      setDestinationAccountId(nextAccounts[1]?.id ?? nextAccounts[0]?.id ?? "");
+      setCategoryId(nextCategories[0]?.id ?? "");
+    }
+    loadCatalogs();
+  }, [supabase, type]);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -743,9 +828,12 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
       } else if (payment) {
         const { data: account } = await supabase.from("accounts").select("id").eq("kind", type === "cobro" ? "efectivo" : "banco").eq("active", true).limit(1).maybeSingle();
         if (!account) throw new Error("No hay una cuenta financiera configurada.");
-        const { data: student } = name.trim()
-          ? await supabase.from("students").select("id").or(`enrollment.ilike.%${name.trim()}%,first_name.ilike.%${name.trim()}%,last_name.ilike.%${name.trim()}%`).limit(1).maybeSingle()
-          : { data: null };
+        const { data: studentRows } = name.trim()
+          ? await supabase.from("students").select("id,enrollment,first_name,last_name").eq("active", true).limit(1000)
+          : { data: [] };
+        const student = name.trim()
+          ? (studentRows ?? []).find((candidate) => normalizeSearch(`${candidate.enrollment} ${candidate.first_name} ${candidate.last_name}`).includes(normalizeSearch(name.trim())))
+          : null;
         if (type === "cobro") {
           if (!student) throw new Error("Selecciona un alumno válido para generar el recibo.");
           const { data: cycle } = await supabase.from("school_cycles").select("id").eq("active", true).single();
@@ -792,23 +880,25 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
         close();
         return;
       } else if (type === "Egresos") {
-        const { data: account } = await supabase.from("accounts").select("id").eq("name", "Caja administración").single();
-        const { data: category } = await supabase.from("expense_categories").select("id").eq("name", "Servicios").single();
-        if (!account || !category) throw new Error("Faltan catálogos financieros iniciales.");
+        if (!accountId || !categoryId) throw new Error("Selecciona la cuenta y la partida del egreso.");
         const { error } = await supabase.from("expenses").insert({
-          account_id: account.id, category_id: category.id, spent_on: date,
+          account_id: accountId, category_id: categoryId, spent_on: date,
           description: description.trim() || name.trim(), subtotal: Number(amount),
-          payment_method: "efectivo", created_by: user.id,
+          payment_method: paymentMethod, created_by: user.id,
         });
         if (error) throw error;
       } else if (type === "Traspasos") {
-        const { data: accounts } = await supabase.from("accounts").select("id,name").in("name", ["Caja administración", "Banco principal"]);
-        const source = accounts?.find((account) => account.name === "Caja administración");
-        const destination = accounts?.find((account) => account.name === "Banco principal");
-        if (!source || !destination) throw new Error("Faltan cuentas financieras iniciales.");
+        if (!accountId || !destinationAccountId || accountId === destinationAccountId) throw new Error("Selecciona cuentas de origen y destino diferentes.");
         const { error } = await supabase.from("transfers").insert({
-          source_account_id: source.id, destination_account_id: destination.id,
+          source_account_id: accountId, destination_account_id: destinationAccountId,
           transferred_on: date, amount: Number(amount), reason: description.trim() || "Traspaso interno", created_by: user.id,
+        });
+        if (error) throw error;
+      } else if (type === "Conciliación") {
+        if (!accountId) throw new Error("Selecciona la cuenta bancaria.");
+        const { error } = await supabase.from("bank_movements").insert({
+          account_id: accountId, bank_date: date, description: description.trim() || name.trim(),
+          reference: reference.trim() || null, amount: Number(amount), imported_by: user.id,
         });
         if (error) throw error;
       } else {
@@ -831,7 +921,10 @@ function QuickForm({ type, close }: { type: string; close: () => void }) {
         <div className="formRow"><label>Fecha<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label>Monto<input required type="number" min=".01" step=".01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="$ 0.00" /></label></div>
         <label>{type === "cobro" ? "Concepto" : "Referencia bancaria"}<input required={type === "transferencia"} value={type === "cobro" ? concept : reference} onChange={(event) => type === "cobro" ? setConcept(event.target.value) : setReference(event.target.value)} placeholder={type === "cobro" ? "Colegiatura" : "Referencia del depósito"} /></label>
       </> : <><label>{type === "Alumnos" ? "Nombre completo" : "Descripción"}<input required value={name} onChange={(event) => setName(event.target.value)} placeholder="Escribe la información principal" /></label>
-        <div className="formRow"><label>Fecha<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label>{type === "Alumnos" ? "Matrícula" : "Importe"}<input required={type !== "Alumnos"} type={type === "Alumnos" ? "text" : "number"} min={type === "Alumnos" ? undefined : ".01"} step={type === "Alumnos" ? undefined : ".01"} value={type === "Alumnos" ? enrollment : amount} onChange={(event) => type === "Alumnos" ? setEnrollment(event.target.value) : setAmount(event.target.value)} placeholder={type === "Alumnos" ? "CEI-0001" : "$ 0.00"} /></label></div>
+        <div className="formRow"><label>Fecha<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label>{type === "Alumnos" ? "Matrícula" : "Importe"}<input required={type !== "Alumnos"} type={type === "Alumnos" ? "text" : "number"} min={type === "Alumnos" || type === "Conciliación" ? undefined : ".01"} step={type === "Alumnos" ? undefined : ".01"} value={type === "Alumnos" ? enrollment : amount} onChange={(event) => type === "Alumnos" ? setEnrollment(event.target.value) : setAmount(event.target.value)} placeholder={type === "Alumnos" ? "CEI-0001" : "$ 0.00"} /></label></div>
+        {type === "Egresos" && <><div className="formRow"><label>Cuenta origen<select required value={accountId} onChange={(event) => setAccountId(event.target.value)}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label><label>Partida<select required value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>{categories.map((category) => <option key={category.id} value={category.id}>{category.name} · {category.type}</option>)}</select></label></div><label>Forma de pago<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option value="efectivo">Efectivo</option><option value="transferencia">Transferencia</option><option value="tarjeta">Tarjeta</option><option value="otro">Otro</option></select></label></>}
+        {type === "Traspasos" && <div className="formRow"><label>Cuenta origen<select required value={accountId} onChange={(event) => setAccountId(event.target.value)}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label><label>Cuenta destino<select required value={destinationAccountId} onChange={(event) => setDestinationAccountId(event.target.value)}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label></div>}
+        {type === "Conciliación" && <><label>Cuenta bancaria<select required value={accountId} onChange={(event) => setAccountId(event.target.value)}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label><label>Referencia bancaria<input value={reference} onChange={(event) => setReference(event.target.value)} placeholder="Referencia o concepto del estado de cuenta" /></label></>}
         {type === "Alumnos" && <><label>Grado<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Ej. 4° Primaria" /></label><div className="formRow"><label>Familiar o tutor<input value={tutorName} onChange={(event) => setTutorName(event.target.value)} placeholder="Nombre completo" /></label><label>Teléfono de contacto<input type="tel" value={tutorPhone} onChange={(event) => setTutorPhone(event.target.value)} placeholder="999 000 0000" /></label></div></>}
       </>}
       {message && <p className="formError">{message}</p>}
