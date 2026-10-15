@@ -4,13 +4,14 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
-type Kind = "student" | "charge" | "income" | "expense" | "transfer" | "bank";
+type Kind = "student" | "charge" | "income" | "expense" | "transfer" | "bank" | "payroll" | "scholarship" | "budget";
 type Account = { id: string; name: string };
 type Category = { id: string; name: string; type: string };
 
 const titles: Record<Kind, string> = {
   student: "Editar alumno", charge: "Editar cargo", income: "Editar ingreso",
   expense: "Editar egreso", transfer: "Editar traspaso", bank: "Editar movimiento bancario",
+  payroll: "Editar periodo de nómina", scholarship: "Editar beca", budget: "Editar presupuesto",
 };
 
 export function CorrectionModal({ action, close }: { action: string; close: () => void }) {
@@ -42,6 +43,11 @@ export function CorrectionModal({ action, close }: { action: string; close: () =
   const [description, setDescription] = useState("");
   const [tax, setTax] = useState("0");
   const [status, setStatus] = useState("pendiente");
+  const [endDate, setEndDate] = useState("");
+  const [percentage, setPercentage] = useState("");
+  const [conceptId, setConceptId] = useState("");
+  const [active, setActive] = useState(true);
+  const [budgetName, setBudgetName] = useState("");
 
   useEffect(() => {
     if (operation !== "edit" || !id) return;
@@ -85,6 +91,25 @@ export function CorrectionModal({ action, close }: { action: string; close: () =
           const { data, error } = await supabase.from("bank_movements").select("bank_date,description,reference,amount,status").eq("id", id).single();
           if (error) throw error;
           setDate(data.bank_date); setDescription(data.description); setBankReference(data.reference ?? ""); setAmount(String(data.amount)); setStatus(data.status);
+        } else if (kind === "payroll") {
+          const [{ data, error }, { data: accountRows }] = await Promise.all([
+            supabase.from("payroll_periods").select("starts_on,ends_on,account_id,status").eq("id", id).single(),
+            supabase.from("accounts").select("id,name").eq("active", true).order("name"),
+          ]);
+          if (error) throw error;
+          setAccounts((accountRows ?? []) as Account[]); setAccountId(data.account_id ?? ""); setDate(data.starts_on); setEndDate(data.ends_on); setStatus(data.status);
+        } else if (kind === "scholarship") {
+          const [{ data, error }, { data: conceptRows }] = await Promise.all([
+            supabase.from("scholarships").select("percentage,starts_on,ends_on,concept_id,active").eq("id", id).single(),
+            supabase.from("payment_concepts").select("id,name").eq("active", true).order("name"),
+          ]);
+          if (error) throw error;
+          setCategories((conceptRows ?? []).map((item) => ({ id: item.id, name: item.name, type: "concepto" })));
+          setPercentage(String(data.percentage)); setDate(data.starts_on); setEndDate(data.ends_on); setConceptId(data.concept_id ?? ""); setActive(data.active);
+        } else if (kind === "budget") {
+          const { data, error } = await supabase.from("budgets").select("name,status").eq("id", id).single();
+          if (error) throw error;
+          setBudgetName(data.name); setStatus(data.status);
         }
       } catch (error) {
         setMessage(error instanceof Error ? error.message : "No se pudo cargar el registro.");
@@ -129,10 +154,18 @@ export function CorrectionModal({ action, close }: { action: string; close: () =
         p_transfer_id: id, p_transferred_on: date, p_amount: Number(amount), p_reason: description,
         p_source_account_id: accountId, p_destination_account_id: destinationAccountId,
       });
-      else result = await supabase.rpc("update_bank_movement_record", {
+      else if (kind === "bank") result = await supabase.rpc("update_bank_movement_record", {
         p_movement_id: id, p_bank_date: date, p_description: description, p_reference: bankReference,
         p_amount: Number(amount), p_status: status,
       });
+      else if (kind === "payroll") result = await supabase.rpc("update_payroll_period_record", {
+        p_period_id: id, p_starts_on: date, p_ends_on: endDate, p_account_id: accountId || null, p_status: status,
+      });
+      else if (kind === "scholarship") result = await supabase.rpc("update_scholarship_record", {
+        p_scholarship_id: id, p_percentage: Number(percentage), p_starts_on: date, p_ends_on: endDate,
+        p_concept_id: conceptId || null, p_active: active,
+      });
+      else result = await supabase.rpc("update_budget_record", { p_budget_id: id, p_name: budgetName, p_status: status });
       if (result.error) throw result.error;
       window.dispatchEvent(new Event("cei:data-changed"));
       close();
@@ -160,6 +193,9 @@ export function CorrectionModal({ action, close }: { action: string; close: () =
         {kind === "expense" && <><div className="formRow"><label>Fecha<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label>Proveedor<input value={supplier} onChange={(event) => setSupplier(event.target.value)} /></label></div><label>Descripción<input required value={description} onChange={(event) => setDescription(event.target.value)} /></label><div className="formRow"><label>Subtotal<input required type="number" min="0" step=".01" value={amount} onChange={(event) => setAmount(event.target.value)} /></label><label>Impuesto<input required type="number" min="0" step=".01" value={tax} onChange={(event) => setTax(event.target.value)} /></label></div><div className="formRow"><label>Cuenta<select required value={accountId} onChange={(event) => setAccountId(event.target.value)}>{accounts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>Partida<select required value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>{categories.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.type}</option>)}</select></label></div><label>Forma de pago<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option value="efectivo">Efectivo</option><option value="transferencia">Transferencia</option><option value="tarjeta">Tarjeta</option><option value="otro">Otro</option></select></label></>}
         {kind === "transfer" && <><div className="formRow"><label>Fecha<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label>Importe<input required type="number" min=".01" step=".01" value={amount} onChange={(event) => setAmount(event.target.value)} /></label></div><label>Motivo<input required value={description} onChange={(event) => setDescription(event.target.value)} /></label><div className="formRow"><label>Cuenta origen<select required value={accountId} onChange={(event) => setAccountId(event.target.value)}>{accounts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>Cuenta destino<select required value={destinationAccountId} onChange={(event) => setDestinationAccountId(event.target.value)}>{accounts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div></>}
         {kind === "bank" && <><div className="formRow"><label>Fecha banco<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label>Importe<input required type="number" step=".01" value={amount} onChange={(event) => setAmount(event.target.value)} /></label></div><label>Descripción<input required value={description} onChange={(event) => setDescription(event.target.value)} /></label><div className="formRow"><label>Referencia<input value={bankReference} onChange={(event) => setBankReference(event.target.value)} /></label><label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="pendiente">Pendiente</option><option value="no_identificado">No identificado</option><option value="conciliado">Conciliado</option><option value="duplicado">Duplicado</option></select></label></div></>}
+        {kind === "payroll" && <><div className="formRow"><label>Inicio<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label>Fin<input required type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label></div><div className="formRow"><label>Caja<select value={accountId} onChange={(event) => setAccountId(event.target.value)}><option value="">Sin caja asignada</option>{accounts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="borrador">Borrador</option><option value="confirmado">Confirmada</option></select></label></div></>}
+        {kind === "scholarship" && <><div className="formRow"><label>Porcentaje<input required type="number" min="0" max="100" step=".01" value={percentage} onChange={(event) => setPercentage(event.target.value)} /></label><label>Concepto<select value={conceptId} onChange={(event) => setConceptId(event.target.value)}><option value="">Todos los conceptos</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div><div className="formRow"><label>Inicio<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label><label>Fin<input required type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label></div><label className="checkboxLabel"><input type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} /> Beca activa</label></>}
+        {kind === "budget" && <><label>Nombre del presupuesto<input required value={budgetName} onChange={(event) => setBudgetName(event.target.value)} /></label><label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="borrador">Borrador</option><option value="confirmado">Confirmado</option></select></label></>}
       </>}
       {message && <p className="formError">{message}</p>}
       <div className="modalActions"><button type="button" className="secondary" onClick={close}>Cerrar</button><button className={isAction ? "primary dangerButton" : "primary"} disabled={busy || loading}>{busy ? "Guardando…" : isAction ? "Confirmar acción" : "Guardar cambios"}</button></div>

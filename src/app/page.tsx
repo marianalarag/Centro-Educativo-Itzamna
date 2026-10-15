@@ -3,7 +3,7 @@
 import {
   AlertTriangle, ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Banknote, Bell,
   BookOpen, CheckCheck, CheckCircle2, ChevronDown, CircleDollarSign, ClipboardList,
-  Clock3, FileText, GraduationCap, LogOut, Menu, Plus, Search, Upload, Users, X,
+  Clock3, FileText, GraduationCap, LogOut, Menu, Pencil, Plus, Search, Trash2, Upload, Users, X,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -557,7 +557,7 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
   const data = moduleData[name] ?? moduleData.Alumnos;
   const liveModule = ["Alumnos", "Cobros", "Ingresos", "Conciliación", "Egresos", "Traspasos"].includes(name);
   const [rows, setRows] = useState<string[][]>([]);
-  const [rowActions, setRowActions] = useState<Record<string, { kind: "student" | "charge" | "income" | "expense" | "transfer" | "bank"; id: string }>>({});
+  const [rowActions, setRowActions] = useState<Record<string, { kind: "student" | "charge" | "income" | "expense" | "transfer" | "bank" | "payroll" | "scholarship" | "budget"; id: string }>>({});
   const [query, setQuery] = useState("");
   const [firstFilter, setFirstFilter] = useState("todos");
   const [secondFilter, setSecondFilter] = useState("todos");
@@ -649,7 +649,7 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
             return [`${formatDate(period.starts_on)} – ${formatDate(period.ends_on)}`, String(periodItems.length), money.format(earnings), money.format(deductions), money.format(earnings - deductions), accountMap.get(period.account_id ?? "") ?? "—", String(period.status)];
           });
           setRows(nextRows);
-          setRowActions({});
+          setRowActions(Object.fromEntries(nextRows.map((row, index) => [row.join("\u001f"), { kind: "payroll" as const, id: periods?.[index].id }] )));
         } else if (name === "Becas") {
           const [{ data: scholarships, error }, { data: students }, { data: concepts }] = await Promise.all([
             supabase.from("scholarships").select("id,student_id,concept_id,kind,percentage,starts_on,ends_on,active").order("starts_on", { ascending: false }).limit(100),
@@ -665,7 +665,7 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
             money.format(Number(scholarship.percentage) / 100), scholarship.active ? "Activa" : "Inactiva",
           ]);
           setRows(nextRows);
-          setRowActions({});
+          setRowActions(Object.fromEntries(nextRows.map((row, index) => [row.join("\u001f"), { kind: "scholarship" as const, id: scholarships?.[index].id }] )));
         } else if (name === "Presupuesto") {
           const { data: budgetRows, error } = await supabase.from("budget_vs_actual").select("budget_id,number,month_name,budget_income,actual_income,budget_expense,actual_expense").order("number").limit(200);
           if (error) throw error;
@@ -676,7 +676,7 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
             Number(budget.budget_income) > 0 ? `${Math.round(Number(budget.actual_income) * 100 / Number(budget.budget_income))}%` : "—",
           ]);
           setRows(nextRows);
-          setRowActions({});
+          setRowActions(Object.fromEntries(nextRows.map((row, index) => [row.join("\u001f"), { kind: "budget" as const, id: budgetRows?.[index].budget_id }] )));
         } else if (name === "Egresos") {
           const [{ data: expenses, error }, { data: categories }, { data: accounts }] = await Promise.all([
             supabase.from("expenses").select("id,spent_on,category_id,account_id,supplier,description,total,status").eq("status", "confirmado").order("spent_on", { ascending: false }).limit(100),
@@ -744,7 +744,7 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
       const isStatus = data.headers[j] === "Estado";
       const statusTone = cell === "Pagado" ? "paid" : cell === "Pagó con retardo" ? "late" : cell === "No ha pagado" ? "unpaid" : "";
       return <td data-label={data.headers[j]} className={[j===1?"person":"", getFinancialTone(name, data.headers[j], cell, row)].filter(Boolean).join(" ")} key={j}>{isStatus && statusTone ? <span className={`paymentBadge ${statusTone}`}>{cell}</span> : cell}</td>;
-    })}{action && <td data-label="Acciones"><div className="tableActions"><button type="button" className="tableAction" onClick={() => openForm(`correction:${action.kind}:${action.id}:edit`)}>Editar</button>{action.kind !== "bank" || row[6] !== "duplicado" ? <button type="button" className="tableAction dangerAction" onClick={() => openForm(`correction:${action.kind}:${action.id}:${action.kind === "student" ? "deactivate" : action.kind === "bank" ? "duplicate" : "cancel"}`)}>{action.kind === "student" ? "Dar de baja" : action.kind === "bank" ? "Marcar duplicado" : "Cancelar"}</button> : null}</div></td>}</tr>})}</tbody></table>{loading && <div className="empty">Cargando registros…</div>}{!loading && !visibleRows.length && !loadError && <div className="empty">No hay registros para mostrar.</div>}{loadError && <div className="empty errorText">{loadError}</div>}</div><div className="panelFooter"><span>{visibleRows.length} registros disponibles</span></div></div>
+    })}{action && <td data-label="Acciones"><div className="tableActions"><button type="button" className="tableAction iconAction" title="Editar" aria-label="Editar" onClick={() => openForm(`correction:${action.kind}:${action.id}:edit`)}><Pencil size={14}/></button>{action.kind !== "bank" || row[6] !== "duplicado" ? <button type="button" className="tableAction dangerAction iconAction" title={action.kind === "student" ? "Dar de baja" : action.kind === "bank" ? "Marcar duplicado" : "Cancelar"} aria-label={action.kind === "student" ? "Dar de baja" : action.kind === "bank" ? "Marcar duplicado" : "Cancelar"} onClick={() => openForm(`correction:${action.kind}:${action.id}:${action.kind === "student" ? "deactivate" : action.kind === "bank" ? "duplicate" : "cancel"}`)}><Trash2 size={14}/></button> : null}</div></td>}</tr>})}</tbody></table>{loading && <div className="empty">Cargando registros…</div>}{!loading && !visibleRows.length && !loadError && <div className="empty">No hay registros para mostrar.</div>}{loadError && <div className="empty errorText">{loadError}</div>}</div><div className="panelFooter"><span>{visibleRows.length} registros disponibles</span></div></div>
   </section>;
 }
 
