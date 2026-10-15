@@ -57,6 +57,21 @@ function formatDate(value: string | null) {
   return new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(`${value}T00:00:00Z`));
 }
 
+function daysUntil(value: string | null) {
+  if (!value) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const dueDate = new Date(`${value}T00:00:00`);
+  dueDate.setHours(0, 0, 0, 0);
+  return Math.round((dueDate.getTime() - today.getTime()) / 86_400_000);
+}
+
+function dueSoonLabel(days: number) {
+  if (days === 0) return "vence hoy";
+  if (days === 1) return "vence mañana";
+  return `vence en ${days} días`;
+}
+
 function normalizeSearch(value: string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("es");
 }
@@ -112,11 +127,24 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
     (dashboardGrade === "todos" || row.grade === dashboardGrade) &&
     (dashboardStatus === "todos" || row.payment_status === dashboardStatus)), [dashboardGrade, dashboardStatus, paymentStatuses]);
   const notifications = useMemo(() => [
-    ...paymentStatuses.filter((row) => row.payment_status === "no_pagado").map((row) => ({
+    ...paymentStatuses.filter((row) => {
+      const days = daysUntil(row.due_on);
+      return row.payment_status === "no_pagado" && (days === null || days < 0 || days > 7);
+    }).map((row) => ({
       id: `unpaid-${row.student_id}-${row.due_on}`,
       type: "unpaid",
       title: `${row.first_name} ${row.last_name} tiene un pago pendiente`,
       detail: `${row.concept ?? "Cargo escolar"} · ${money.format(Number(row.balance ?? 0))} · venció ${formatDate(row.due_on)}`,
+      target: "Cobros",
+    })),
+    ...paymentStatuses.filter((row) => {
+      const days = daysUntil(row.due_on);
+      return row.payment_status === "no_pagado" && days !== null && days >= 0 && days <= 7;
+    }).map((row) => ({
+      id: `due-soon-${row.student_id}-${row.due_on}`,
+      type: "due_soon",
+      title: `Pago próximo a vencer: ${row.first_name} ${row.last_name}`,
+      detail: `${row.concept ?? "Cargo escolar"} · ${money.format(Number(row.balance ?? 0))} · ${dueSoonLabel(daysUntil(row.due_on) ?? 0)}`,
       target: "Cobros",
     })),
     ...paymentStatuses.filter((row) => row.payment_status === "pagado_retraso").slice(0, 3).map((row) => ({
@@ -329,7 +357,7 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
           <div className="headerRight notificationArea"><button className="iconButton notificationBell" aria-label="Notificaciones" aria-expanded={notificationOpen} onClick={() => setNotificationOpen((open) => !open)}><Bell size={20} />{unreadNotifications > 0 && <em>{unreadNotifications > 9 ? "9+" : unreadNotifications}</em>}</button>
             {notificationOpen && <div className="notificationPanel">
               <div className="notificationHead"><div><strong>Notificaciones</strong><span>{unreadNotifications ? `${unreadNotifications} sin leer` : "Todo al día"}</span></div>{unreadNotifications > 0 && <button onClick={() => markNotificationsRead()}><CheckCheck size={15}/>Marcar leídas</button>}</div>
-              <div className="notificationList">{notifications.slice(0, 10).map((item) => <button key={item.id} className={`${item.type} ${readNotifications.includes(item.id) ? "read" : ""}`} onClick={() => openNotification(item)}><span>{item.type === "unpaid" ? <AlertTriangle size={17}/> : item.type === "late" ? <Clock3 size={17}/> : <CircleDollarSign size={17}/>}</span><div><strong>{item.title}</strong><small>{item.detail}</small></div>{!readNotifications.includes(item.id) && <i/>}</button>)}{!notifications.length && <div className="notificationEmpty"><CheckCircle2 size={24}/><span>No hay avisos pendientes</span></div>}</div>
+              <div className="notificationList">{notifications.slice(0, 10).map((item) => <button key={item.id} className={`${item.type} ${readNotifications.includes(item.id) ? "read" : ""}`} onClick={() => openNotification(item)}><span>{item.type === "unpaid" ? <AlertTriangle size={17}/> : item.type === "late" || item.type === "due_soon" ? <Clock3 size={17}/> : <CircleDollarSign size={17}/>}</span><div><strong>{item.title}</strong><small>{item.detail}</small></div>{!readNotifications.includes(item.id) && <i/>}</button>)}{!notifications.length && <div className="notificationEmpty"><CheckCircle2 size={24}/><span>No hay avisos pendientes</span></div>}</div>
             </div>}
           </div>
         </header>
