@@ -101,6 +101,8 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
   const [userName, setUserName] = useState("Personal autorizado");
   const [userRole, setUserRole] = useState("captura");
   const [activeCycleName, setActiveCycleName] = useState("Ciclo actual");
+  const [demoCleanupBusy, setDemoCleanupBusy] = useState(false);
+  const [demoCleanupMessage, setDemoCleanupMessage] = useState("");
   const displayMovements: readonly MovementRow[] = dbMovements;
   const visible = useMemo(() => displayMovements.filter((m) =>
     normalizeSearch(m.join(" ")).includes(normalizeSearch(query)) &&
@@ -279,6 +281,22 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
     go(item.target);
   }
 
+  async function clearDemoData() {
+    if (userRole !== "direccion" && userRole !== "admin") return;
+    if (!window.confirm("Se cancelarán y ocultarán únicamente los registros marcados como demostración. ¿Continuar?")) return;
+    setDemoCleanupBusy(true);
+    setDemoCleanupMessage("");
+    const { data, error } = await supabase.rpc("clear_financial_demo", { p_confirmation: "BORRAR_PRUEBA_CEI" });
+    if (error) {
+      setDemoCleanupMessage(error.message);
+    } else {
+      const result = data as { students?: number; charges?: number; incomes?: number; expenses?: number } | null;
+      setDemoCleanupMessage(`Datos de prueba retirados: ${result?.students ?? 0} alumnos, ${result?.charges ?? 0} cargos, ${result?.incomes ?? 0} ingresos y ${result?.expenses ?? 0} egresos.`);
+      window.dispatchEvent(new Event("cei:data-changed"));
+    }
+    setDemoCleanupBusy(false);
+  }
+
   if (authChecking) return <div className="authLoading">Comprobando sesión…</div>;
 
   return (
@@ -378,7 +396,7 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
           <section className="panel movements">
             <div className="movementHead">
               <div><h2>Movimientos recientes</h2><p>Ingresos y egresos registrados</p></div>
-              <div className="movementFilters"><label className="search"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar alumno o folio" /></label><label className="compactFilter"><span>Tipo</span><select value={movementType} onChange={(event) => setMovementType(event.target.value)}><option value="todos">Todos</option><option value="Ingreso">Ingresos</option><option value="Egreso">Egresos</option></select></label></div>
+              <div className="movementFilters"><label className="search"><Search size={17} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar alumno o folio" /></label><label className="compactFilter"><span>Tipo</span><select value={movementType} onChange={(event) => setMovementType(event.target.value)}><option value="todos">Todos</option><option value="Ingreso">Ingresos</option><option value="Egreso">Egresos</option></select></label>{(userRole === "direccion" || userRole === "admin") && <button className="secondary" type="button" onClick={clearDemoData} disabled={demoCleanupBusy}><Trash2 size={16} />{demoCleanupBusy ? "Retirando…" : "Retirar datos de prueba"}</button>}</div>
             </div>
             <div className="tableWrap"><table>
               <thead><tr><th>Folio</th><th>Fecha</th><th>Alumno / proveedor</th><th>Concepto</th><th>Forma / caja</th><th>Importe</th><th>Estado</th></tr></thead>
@@ -386,6 +404,7 @@ export default function Home({ initialActive = "Inicio" }: { initialActive?: str
                 <tr key={folio}><td data-label="Folio"><button className="folio">{folio}</button></td><td data-label="Fecha">{date}</td><td data-label="Alumno / proveedor" className="person">{person}</td><td data-label="Concepto">{detail}</td><td data-label="Forma / caja">{method}</td><td data-label="Importe" className={amount < 0 ? "amount negative" : "amount positive"}>{money.format(amount)}</td><td data-label="Estado"><span className={`badge ${status.toLowerCase()}`}>{status}</span></td></tr>)}
               </tbody>
             </table>{!visible.length && <div className="empty">No encontramos movimientos con esa búsqueda.</div>}</div>
+            {demoCleanupMessage && <p className={demoCleanupMessage.startsWith("Datos de prueba") ? "formSuccess" : "formError"}>{demoCleanupMessage}</p>}
             <div className="panelFooter"><span>Mostrando {visible.length} movimientos recientes</span><button onClick={() => go("Ingresos")}>Consultar todos los movimientos →</button></div>
           </section>
           </>}
@@ -555,7 +574,7 @@ const moduleFilters: Record<string, Array<{ label: string; column: number }>> = 
 function ModuleView({ name, openForm }: { name: string; openForm: (type: string) => void }) {
   const supabase = useMemo(() => createClient(), []);
   const data = moduleData[name] ?? moduleData.Alumnos;
-  const liveModule = ["Alumnos", "Cobros", "Ingresos", "Conciliación", "Egresos", "Traspasos"].includes(name);
+  const liveModule = name !== "Reportes";
   const [rows, setRows] = useState<string[][]>([]);
   const [rowActions, setRowActions] = useState<Record<string, { kind: "student" | "charge" | "income" | "expense" | "transfer" | "bank" | "payroll" | "scholarship" | "budget"; id: string }>>({});
   const [query, setQuery] = useState("");
@@ -732,7 +751,7 @@ function ModuleView({ name, openForm }: { name: string; openForm: (type: string)
   const hasActions = Object.keys(rowActions).length > 0;
   const act = () => openForm(name === "Cobros" ? "cobro" : name === "Ingresos" ? "transferencia" : name);
   return <section className="modulePage">
-    <div className="moduleHead"><div><p className="eyebrow">CICLO ACTIVO</p><h1>{data.title}</h1><p>{data.subtitle}</p></div><div className="moduleHeadActions">{name === "Alumnos" && <button className="secondary" onClick={() => openForm("importar-alumnos")}><Upload size={18}/>Importar lista</button>}{operationalModule && ["Alumnos", "Cobros", "Ingresos", "Conciliación", "Egresos", "Traspasos"].includes(name) && <button className="primary" onClick={act}><Plus size={18}/>{data.action}</button>}</div></div>
+    <div className="moduleHead"><div><p className="eyebrow">CICLO ACTIVO</p><h1>{data.title}</h1><p>{data.subtitle}</p></div><div className="moduleHeadActions">{name === "Alumnos" && <button className="secondary" onClick={() => openForm("importar-alumnos")}><Upload size={18}/>Importar lista</button>}{operationalModule && <button className="primary" onClick={act}><Plus size={18}/>{data.action}</button>}</div></div>
     {name === "Alumnos" && <div className="studentMetrics">
       <div><span>Alumnos</span><strong>{studentMetrics.total}</strong></div>
       <div><span>Con pago registrado</span><strong className="financialPositive">{studentMetrics.paidRate}%</strong></div>
