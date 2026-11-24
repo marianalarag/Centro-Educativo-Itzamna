@@ -46,7 +46,7 @@ Sustituye `caja` por `captura` o `direccion` según la autorización aprobada. N
 
 La aplicación se publica en Vercel, pero los inicios de sesión y datos dependen de Supabase. La URL inicial de Vercel respondió y redirigió al inicio de sesión al revisar este repositorio. Eso confirma que Vercel servía la página en ese momento; no demuestra que Auth y la base de datos estén disponibles.
 
-La URL configurada localmente y en el JavaScript publicado en Vercel es la del proyecto Supabase `cei-cobros`. La cuenta de Supabase muestra ese proyecto con estado **INACTIVE**; por eso el nombre DNS del endpoint no resuelve. El proyecto existe en la cuenta y no se debe reemplazar por una base nueva.
+La URL configurada localmente y en el JavaScript publicado en Vercel es la del proyecto Supabase `cei-cobros`. El 24 de noviembre de 2026 se detectó **INACTIVE** y el nombre DNS del endpoint no resolvía. Se restauró el proyecto existente; la comprobación posterior mostró `ACTIVE_HEALTHY` y Auth respondió HTTP 200. No se reemplazó la base ni sus datos.
 
 ### Recuperar la conexión de producción
 
