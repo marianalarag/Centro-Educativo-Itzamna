@@ -49,3 +49,11 @@ respaldos y política de datos personales.
 
 La guía de operación diaria y correcciones está en
 `docs/OPERACION_REAL.md`.
+
+## Manuales
+
+- [Manual de usuario](docs/MANUAL_USUARIO.md)
+- [Manual de administración](docs/MANUAL_ADMINISTRADOR.md)
+
+El manual de administración incluye la comprobación de disponibilidad de
+Vercel y Supabase y los pasos para corregir la conexión de producción.

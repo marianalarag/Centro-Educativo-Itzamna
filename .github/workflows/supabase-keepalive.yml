@@ -1,0 +1,78 @@
+name: Keep Supabase available
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-keepalive
+  cancel-in-progress: false
+
+jobs:
+  check-and-resume:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_ID: uemgfhblipqjxgpqmhsa
+
+    steps:
+      - name: Resume if paused and register database activity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$SUPABASE_ACCESS_TOKEN" ]]; then
+            echo "::error::The SUPABASE_ACCESS_TOKEN repository secret is not configured."
+            exit 1
+          fi
+
+          api="https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_ID"
+          auth_header="Authorization: Bearer $SUPABASE_ACCESS_TOKEN"
+
+          project_status=$(curl --fail --silent --show-error \
+            --header "$auth_header" "$api" | jq -r '.status')
+          echo "Project status: $project_status"
+
+          if [[ "$project_status" == "INACTIVE" ]]; then
+            curl --fail --silent --show-error --output /dev/null \
+              --request POST --header "$auth_header" "$api/restore"
+            echo "Restore requested. Waiting for the project to become healthy."
+          fi
+
+          healthy=false
+          for attempt in {1..60}; do
+            project_status=$(curl --fail --silent --show-error \
+              --header "$auth_header" "$api" | jq -r '.status')
+            echo "Project status: $project_status"
+
+            if [[ "$project_status" == "ACTIVE_HEALTHY" ]]; then
+              healthy=true
+              break
+            fi
+
+            if [[ "$project_status" == "REMOVED" || "$project_status" == "RESTORE_FAILED" ]]; then
+              echo "::error::Supabase returned terminal status $project_status."
+              exit 1
+            fi
+
+            sleep 15
+          done
+
+          if [[ "$healthy" != "true" ]]; then
+            echo "::error::Supabase did not become healthy before the timeout."
+            exit 1
+          fi
+
+          curl --fail --silent --show-error --output /dev/null \
+            --request POST \
+            --header "$auth_header" \
+            --header "Content-Type: application/json" \
+            --data '{"query":"select now() as keepalive_at","read_only":true}' \
+            "$api/database/query"
+
+          echo "Read-only database activity recorded."
